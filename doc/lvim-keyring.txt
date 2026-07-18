@@ -1,0 +1,191 @@
+*lvim-keyring.txt*        A password wallet / secrets manager for Neovim
+
+==============================================================================
+CONTENTS                                                    *lvim-keyring*
+
+  1. Introduction ........................... |lvim-keyring-intro|
+  2. Installation ........................... |lvim-keyring-install|
+  3. Setup .................................. |lvim-keyring-setup|
+  4. Commands ............................... |lvim-keyring-commands|
+  5. Panel keys ............................. |lvim-keyring-panel|
+  6. Public API ............................. |lvim-keyring-api|
+  7. lvim-db integration .................... |lvim-keyring-vault-verb|
+  8. Security ............................... |lvim-keyring-security|
+  9. Health ................................. |lvim-keyring-health|
+ 10. Highlights ............................. |lvim-keyring-highlights|
+
+==============================================================================
+1. INTRODUCTION                                       *lvim-keyring-intro*
+
+lvim-keyring is a password wallet: secrets encrypted at rest, gated behind ONE
+master password, and reachable by every other lvim-tech plugin through a small
+public API. The crypto lives entirely in a small Rust daemon (Argon2id key
+derivation + XChaCha20-Poly1305 authenticated encryption).
+
+The daemon is a per-user AGENT: it holds the unlocked material in its own
+memory (never in the editor), speaks over a per-user unix socket, and is shared
+by every editor instance and by lvim-db — one unlock, everywhere, until you
+lock. Locking (manually, on idle, or when the last editor exits) zeroes the key
+at once.
+
+The vault is ONE sealed file under `stdpath("data")/lvim-keyring/keyring.vault`
+— copying it anywhere is a complete, portable encrypted backup (useless without
+the master password). The master password is run through Argon2id to derive the
+key; the KDF parameters live in the file header, so an old vault keeps opening
+while new writes can use stronger parameters. A wrong password fails the
+authentication check — there is nothing else to guess.
+
+==============================================================================
+2. INSTALLATION                                     *lvim-keyring-install*
+
+Requires Neovim >= 0.10, lvim-utils, lvim-ui, and a Rust toolchain (cargo) to
+build the daemon.
+
+Install and manage it from the LVIM package manager — the Plugins tab: >vim
+  :LvimInstaller plugins
+<
+lvim-installer installs through Neovim's built-in `vim.pack`. Native form: >lua
+  vim.pack.add({ "https://github.com/lvim-tech/lvim-keyring" })
+  require("lvim-keyring").setup()
+<
+Build the backend once (and after each update): >sh
+  sh native/build.sh
+<
+Without the daemon the plugin still loads; every action reports that the
+backend must be built (see `:checkhealth lvim-keyring`).
+
+==============================================================================
+3. SETUP                                              *lvim-keyring-setup*
+
+`setup()` merges your options into the live config. The full default config: >lua
+  require("lvim-keyring").setup({
+      vault_path = nil,        -- default stdpath("data").."/lvim-keyring/keyring.vault"
+      socket_path = nil,       -- default $XDG_RUNTIME_DIR/lvim-keyring/agent.sock
+      daemon_path = nil,       -- explicit binary path (else env → native/build → native/target)
+      warn_on_missing = true,  -- one INFO notification when the daemon is not built
+      linger_seconds = 0,      -- daemon lifetime after the last client disconnects
+      kdf = { memory_mib = 64, iterations = 3, parallelism = 4 }, -- Argon2id (create/rotate)
+      lock = { timeout_minutes = 15 },  -- idle auto-lock; 0 = never
+      clipboard = { register = "+", clear_seconds = 30 },  -- copy target + auto-clear
+      generate = { length = 24, symbols = true },
+      ui = { layout = "float" },  -- "float" | "area" | "bottom"
+      title = "Keyring",
+      title_pos = "center",
+      icons = {
+          panel = "󰌋", locked = "󰌾", unlocked = "󰌿", entry = "",
+          generate = "󰑐", expand_closed = "", expand_open = "",
+      },
+      colors = { -- namespace accents (a lvim-utils palette key, or "#rrggbb")
+          db = "blue", forge = "magenta", git = "orange",
+          common = "cyan", default = "blue",
+      },
+      keymaps = {
+          add = "a", edit = "e", rename = "r", delete = "d", copy = "y",
+          reveal = "v", generate = "g", lock = "L", rotate = "R", help = "?",
+      },
+  })
+<
+==============================================================================
+4. COMMANDS                                        *lvim-keyring-commands*
+
+  :LvimKeyring              open the wallet panel (create on first run, else unlock)
+  :LvimKeyring unlock       unlock (or create) the vault
+  :LvimKeyring lock         lock now (zeroes the key + entries)
+  :LvimKeyring status       report lock state + entry count
+  :LvimKeyring add          add a secret (name → masked value)
+  :LvimKeyring generate     generate a password into the clipboard register
+  :LvimKeyring rotate       change the master password
+
+==============================================================================
+5. PANEL KEYS                                         *lvim-keyring-panel*
+
+All remappable via `config.keymaps`.
+
+  a          add a secret
+  e          edit the entry's user metadata
+  r          rename the entry
+  d          delete the entry
+  y          copy the value to the register (auto-clears)
+  v / <CR>   reveal the value in a popup
+  g          generate a password + store it
+  L          lock the wallet
+  R          rotate the master password
+  ?          help
+
+Entries are grouped into collapsible sections by NAMESPACE — the first
+`/`-segment of the name (db/, forge/, git/, …); an unqualified name lives under
+`common`. The list NEVER renders a value.
+
+==============================================================================
+6. PUBLIC API                                           *lvim-keyring-api*
+
+lvim-keyring is a PROVIDER: another plugin reaches in to read/write a secret;
+lvim-keyring never depends on, or keeps a list of, its consumers. >lua
+  local kr = require("lvim-keyring")
+  kr.ensure_unlocked(function(ok) end)  -- unlocked→cb(true); locked→prompt→cb(ok)
+  kr.get("forge/github.com", function(value, err) end)  -- err=="locked" possible
+  kr.get_sync("forge/github.com", 3000) -- value?, err? (sync seam; does not prompt)
+  kr.set("db/prod", "s3cr3t", { user = "app", url = "…" }, function(ok, err) end)
+  kr.delete(name, cb) ; kr.rename(from, to, cb) ; kr.list(cb) -- list: names+meta only
+  kr.generate({ length = 24, symbols = true, store_as = "db/new" }, function(v, e) end)
+  kr.is_unlocked() ; kr.on_state(function(s) end) -- for a statusline glyph
+<
+Namespaces — pass your parent, don't bake the prefix. Take a namespaced view
+once, then use bare names: >lua
+  local kr = require("lvim-keyring").scope("forge")
+  kr.get("github.com", function(token) end)  -- resolves "forge/github.com"
+  kr.set("gitlab.com", token)                -- stores "forge/gitlab.com"
+<
+The stored key is always `namespace/name`, so a `{{ vault "forge/github.com" }}`
+template resolves the same entry.
+
+==============================================================================
+7. LVIM-DB INTEGRATION                            *lvim-keyring-vault-verb*
+
+lvim-db's connection form accepts credential TEMPLATES; add the wallet as one: >
+  Password:  {{ vault "db/prod" }}
+<
+lvim-db's daemon reads that secret from the wallet's socket at connect time — no
+driver or plugin configuration needed. A locked wallet reports "the keyring is
+locked — :LvimKeyring unlock"; a stopped agent says so.
+
+==============================================================================
+8. SECURITY                                        *lvim-keyring-security*
+
+Protected against:
+  - Theft of the vault file / a backup / the disk (at rest): Argon2id +
+    XChaCha20-Poly1305; the only offline attack is password guessing priced by
+    the KDF. Names/count/timestamps are inside the ciphertext.
+  - Tampering: the AEAD tag covers the body, the header (KDF params + salt) is
+    the associated data — a bit-flip / param downgrade / salt swap fail closed.
+  - Other users: socket dir 0700, socket 0600, peer-uid check; no core dumps /
+    non-root ptrace of the daemon.
+  - Forgotten sessions: idle auto-lock, lock-on-last-editor-exit, explicit lock,
+    clipboard auto-clear.
+
+Honest limitations:
+  - Any same-user process can read a secret while UNLOCKED (the ssh-agent /
+    OS-keyring model). The design guarantees the master key + at-rest store never
+    live in the editor, plaintext exists in Lua only per-value at use, and locking
+    revokes everything at once.
+  - The master password transits the editor once per unlock (a scratch buffer,
+    wiped after); Lua strings cannot be zeroed.
+  - Unlocked material may reach unencrypted swap / hibernation.
+  - A revealed / copied value is in editor memory / the clipboard while in use.
+
+==============================================================================
+9. HEALTH                                            *lvim-keyring-health*
+
+`:checkhealth lvim-keyring` reports the daemon binary, whether the agent is
+reachable over its socket, the vault's existence + lock state, the socket
+directory posture, and the git credential helper wiring.
+
+==============================================================================
+10. HIGHLIGHTS                                   *lvim-keyring-highlights*
+
+Every group is defined from the live lvim-utils palette (re-applied on
+ColorScheme): per-namespace badge/name accents (LvimKeyringBadge* /
+LvimKeyringName*) and neutral text/meta/value tones. Override colours through
+`config.colors`, never by redefining the groups.
+
+vim:tw=78:ts=8:ft=help:norl:

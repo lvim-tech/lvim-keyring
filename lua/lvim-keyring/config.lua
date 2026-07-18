@@ -35,6 +35,10 @@
 ---@field clipboard LvimKeyringClipboard
 ---@field generate LvimKeyringGenerate
 ---@field ui { layout: string }   panel layout: "float" | "area" | "bottom"
+---@field title string       panel title
+---@field title_pos "left"|"center"|"right"
+---@field icons table<string, string>   Nerd-Font glyphs (single-width, verified)
+---@field colors table<string, string>  namespace accents (palette key or "#rrggbb")
 ---@field keymaps table<string, string>  panel/action keys (all remappable)
 
 ---@type LvimKeyringConfig
@@ -49,6 +53,24 @@ local M = {
     clipboard = { register = "+", clear_seconds = 30 },
     generate = { length = 24, symbols = true },
     ui = { layout = "float" },
+    title = "Keyring",
+    title_pos = "center",
+    icons = {
+        panel = "󰌋", -- nf-md-key_variant
+        locked = "󰌾", -- nf-md-lock
+        unlocked = "󰌿", -- nf-md-lock_open_variant
+        entry = "", -- nf-fa-key
+        generate = "󰑐", -- nf-md-refresh
+        expand_closed = "", -- nf-fa-caret_right
+        expand_open = "", -- nf-fa-caret_down
+    },
+    colors = {
+        db = "blue",
+        forge = "magenta",
+        git = "orange",
+        common = "cyan", -- the catch-all namespace for unqualified names
+        default = "blue",
+    },
     keymaps = {
         add = "a",
         edit = "e",

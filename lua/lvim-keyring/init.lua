@@ -28,6 +28,9 @@ local state_handlers = {}
 ---@param opts LvimKeyringConfig?
 function M.setup(opts)
     utils.merge(config, opts or {})
+    local hl = require("lvim-utils.highlight")
+    hl.setup()
+    hl.bind(require("lvim-keyring.highlights").build)
     daemon.on("vault.state", function(params)
         unlocked = not (params and params.locked)
         for _, h in ipairs(state_handlers) do
@@ -128,14 +131,18 @@ function M.get_sync(name, timeout_ms)
     return value, error
 end
 
---- Store (create or overwrite) a secret. `meta = { user?, url?, notes?, tags? }`.
+--- Store a secret. With `value`, creates or overwrites; with `value == nil`, updates ONLY the `meta`
+--- of an existing entry (the value is left untouched). `meta = { user?, url?, notes?, tags? }`.
 ---@param name string
----@param value string
+---@param value string?
 ---@param meta table?
 ---@param cb fun(ok: boolean, err: string?)?
 function M.set(name, value, meta, cb)
     cb = cb or function() end
-    local params = { name = name, value = value }
+    local params = { name = name }
+    if value ~= nil then
+        params.value = value
+    end
     if meta then
         params.meta = meta
     end
@@ -194,6 +201,39 @@ end
 ---@param cb fun(ok: boolean, err: string?)?
 function M.rotate(cb)
     require("lvim-keyring.ui.prompt").rotate(cb or function() end)
+end
+
+--- A NAMESPACED view of the wallet: every name is prefixed `namespace/`. A consumer passes its own
+--- PARENT once — `local kr = require("lvim-keyring").scope("forge")` — then uses BARE names
+--- (`kr.get(host, cb)` → resolves `forge/<host>`), instead of baking the prefix into every call and
+--- instead of lvim-keyring keeping any list of who its consumers are. Names used through the
+--- TOP-LEVEL API (no scope) are verbatim; the panel files an unqualified name under the `common`
+--- section. The stored KEY is always the composed `namespace/name`, so a `{{ vault "forge/x" }}`
+--- verb (or the git-credential helper) resolves the same entry.
+---@param namespace string
+---@return table
+function M.scope(namespace)
+    local prefix = namespace .. "/"
+    local function key(name)
+        return prefix .. name
+    end
+    return {
+        get = function(name, cb)
+            return M.get(key(name), cb)
+        end,
+        get_sync = function(name, timeout_ms)
+            return M.get_sync(key(name), timeout_ms)
+        end,
+        set = function(name, value, meta, cb)
+            return M.set(key(name), value, meta, cb)
+        end,
+        delete = function(name, cb)
+            return M.delete(key(name), cb)
+        end,
+        rename = function(from, to, cb)
+            return M.rename(key(from), key(to), cb)
+        end,
+    }
 end
 
 --- Open the wallet panel (unlocks first if needed).

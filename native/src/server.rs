@@ -335,15 +335,19 @@ impl Server {
             let ts = now_secs();
             match s.body.entries.get_mut(&p.name) {
                 Some(e) => {
-                    e.value = p.value;
+                    // A meta-only update omits `value` — leave the stored value untouched.
+                    if let Some(v) = p.value {
+                        e.value = v;
+                    }
                     if let Some(m) = &p.meta {
                         apply_meta(e, m);
                     }
                     e.updated = ts;
                 }
                 None => {
+                    let value = p.value.ok_or_else(|| anyhow!("a new secret needs a value"))?;
                     let mut e = Entry {
-                        value: p.value,
+                        value,
                         user: None,
                         url: None,
                         notes: None,
@@ -451,7 +455,9 @@ struct RenameParam {
 #[derive(Deserialize)]
 struct SetParam {
     name: String,
-    value: String,
+    /// Omitted for a meta-only update (the existing value is kept).
+    #[serde(default)]
+    value: Option<String>,
     #[serde(default)]
     meta: Option<MetaIn>,
 }
