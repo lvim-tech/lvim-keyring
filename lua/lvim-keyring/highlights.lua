@@ -65,7 +65,8 @@ end
 function M.build()
     local groups = {
         LvimKeyringText = { fg = c.fg },
-        LvimKeyringMeta = { fg = mtint(c.fg, 0.55) }, -- dimmed user/url/updated
+        LvimKeyringMeta = { fg = mtint(c.fg, 0.55) }, -- dimmed user/url
+        LvimKeyringTime = { fg = c.yellow }, -- the relative "N ago" — one shared colour across all namespaces
         LvimKeyringDim = { fg = mtint(c.fg, 0.6) },
         LvimKeyringEmpty = { fg = mtint(c.fg, 0.5), italic = true },
         LvimKeyringValue = { fg = c.yellow, bold = true }, -- the revealed value popup

@@ -61,10 +61,10 @@ local M = {
         panel = "󰌋", -- nf-md-key_variant
         locked = "󰌾", -- nf-md-lock
         unlocked = "󰌿", -- nf-md-lock_open_variant
-        entry = "", -- nf-fa-key
+        entry = "", -- nf-fa-key
         generate = "󰑐", -- nf-md-refresh
-        expand_closed = "", -- nf-fa-caret_right
-        expand_open = "", -- nf-fa-caret_down
+        expand_closed = "", -- nf-fa-caret_right
+        expand_open = "", -- nf-fa-caret_down
     },
     -- lvim-keyring owns ONLY these two accents: `common` (the catch-all namespace for unqualified
     -- names) and `default` (the fallback for a namespace nobody registered). Every OTHER parent
@@ -77,7 +77,8 @@ local M = {
     },
     keymaps = {
         add = "a",
-        edit = "e",
+        change = "c", -- change the password/value of the entry under the cursor
+        edit = "e", -- edit the entry's user metadata
         rename = "r",
         delete = "d",
         copy = "y",

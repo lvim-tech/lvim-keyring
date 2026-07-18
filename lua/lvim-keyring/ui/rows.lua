@@ -103,9 +103,11 @@ local function str(v)
     return nil
 end
 
---- The metadata string shown DIMMED after the name (user · url · updated) — never the value.
+--- The metadata shown after the name: `info` (user · url) rendered DIM, and the relative time (`rel`,
+--- e.g. "19m ago") rendered YELLOW — a value is NEVER shown. Returned separately so the entry row can
+--- colour the time distinctly (a shared style across every namespace).
 ---@param meta table
----@return string
+---@return string info, string rel
 local function meta_text(meta)
     meta = meta or {}
     local parts = {}
@@ -118,10 +120,7 @@ local function meta_text(meta)
         parts[#parts + 1] = clip(url, 40)
     end
     local rel = ago(type(meta.updated) == "number" and meta.updated or nil)
-    if rel ~= "" then
-        parts[#parts + 1] = rel
-    end
-    return table.concat(parts, "  ·  ")
+    return table.concat(parts, "  ·  "), rel
 end
 
 --- A badge box: a single glyph wrapped in a space each side (so every badge is the same width).
@@ -174,16 +173,23 @@ function M.entry_row(entry, registry, on_pick, namew)
     local rowname = "kr__" .. entry.name
     registry[rowname] = entry
 
-    -- Label = " <name padded to namew>  <meta>". Byte ranges (leading space + name → accent, trailing
-    -- meta → dim), mirroring lvim-vault's split_label: the +1 covers the leading space.
+    -- Label = "<name padded to namew>  <info>  <rel>", NO leading space — so the name starts flush after
+    -- the badge box + the form's gap, exactly like a section header's label ("DB") (that is what puts the
+    -- section title directly above the entry names). `info` (user · url) is DIM; `rel` (the time) is
+    -- YELLOW. label_spans are 0-based byte offsets into the label.
     local dn = clip(display_name(entry.name), 48)
-    local meta = meta_text(entry.meta)
-    local label = (" %-" .. namew .. "s"):format(dn)
-    local spans = { { 1, 1 + #dn, "LvimKeyringName" .. sfx } }
-    if meta ~= "" then
-        local mstart = 1 + math.max(namew, #dn) + 2 -- leading space + padded name field + the 2-space gap
-        label = label .. "  " .. meta
-        spans[#spans + 1] = { mstart, mstart + #meta, "LvimKeyringMeta" }
+    local info, rel = meta_text(entry.meta)
+    local label = ("%-" .. namew .. "s"):format(dn)
+    local spans = { { 0, #dn, "LvimKeyringName" .. sfx } }
+    if info ~= "" then
+        local at = #label + 2
+        label = label .. "  " .. info
+        spans[#spans + 1] = { at, at + #info, "LvimKeyringMeta" }
+    end
+    if rel ~= "" then
+        local at = #label + 2
+        label = label .. "  " .. rel
+        spans[#spans + 1] = { at, at + #rel, "LvimKeyringTime" }
     end
 
     return {

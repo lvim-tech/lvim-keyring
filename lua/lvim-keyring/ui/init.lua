@@ -138,41 +138,6 @@ local function is_totp(entry)
     return entry.meta and entry.meta.totp == true
 end
 
---- Show `text` in a transient popup titled `title`.
----@param title string
----@param text string
-local function show_popup(title, text)
-    ui.info({ text }, {
-        title = title,
-        footer = false,
-        close_keys = { "q", "<Esc>", "<CR>", config.keymaps.reveal },
-        highlights = { { line = 0, col_start = 0, col_end = -1, hl_group = "LvimKeyringValue" } },
-    })
-end
-
---- Reveal an entry's value (or, for a TOTP entry, its CURRENT code + countdown) in a transient popup.
---- The list never shows values; this is the explicit reveal.
----@param entry table
-function M.reveal(entry)
-    if is_totp(entry) then
-        api().totp(entry.name, function(t, err)
-            if err or not t then
-                vim.notify("lvim-keyring: " .. (err or "no code"), vim.log.levels.WARN)
-                return
-            end
-            show_popup(entry.name .. "  (TOTP)", ("%s   ·   expires in %ds"):format(t.code, t.remaining))
-        end)
-        return
-    end
-    api().get(entry.name, function(value, err)
-        if err then
-            vim.notify("lvim-keyring: " .. err, vim.log.levels.WARN)
-            return
-        end
-        show_popup(entry.name, value or "")
-    end)
-end
-
 --- Yank `value` to the configured register with an auto-clear timer that clears ONLY if the register
 --- still holds our value (so a later yank is never clobbered).
 ---@param value string
@@ -196,6 +161,58 @@ local function yank(value, label)
         ),
         vim.log.levels.INFO
     )
+end
+
+--- Show `text` in a transient popup titled `title`, with a `copy` footer button that yanks `copy_value`
+--- (the raw value / the TOTP code) to the register.
+---@param title string
+---@param text string
+---@param copy_value string
+---@param copy_label string
+local function show_popup(title, text, copy_value, copy_label)
+    ui.info({ text }, {
+        title = title,
+        footer_items = {
+            {
+                key = config.keymaps.copy,
+                name = "copy",
+                run = function(st)
+                    yank(copy_value, copy_label)
+                    st.close()
+                end,
+            },
+        },
+        close_keys = { "q", "<Esc>", config.keymaps.reveal },
+        highlights = { { line = 0, col_start = 0, col_end = -1, hl_group = "LvimKeyringValue" } },
+    })
+end
+
+--- Reveal an entry's value (or, for a TOTP entry, its CURRENT code + countdown) in a transient popup
+--- with a copy button. The list never shows values; this is the explicit reveal.
+---@param entry table
+function M.reveal(entry)
+    if is_totp(entry) then
+        api().totp(entry.name, function(t, err)
+            if err or not t then
+                vim.notify("lvim-keyring: " .. (err or "no code"), vim.log.levels.WARN)
+                return
+            end
+            show_popup(
+                entry.name .. "  (TOTP)",
+                ("%s   ·   expires in %ds"):format(t.code, t.remaining),
+                t.code,
+                entry.name .. " code"
+            )
+        end)
+        return
+    end
+    api().get(entry.name, function(value, err)
+        if err then
+            vim.notify("lvim-keyring: " .. err, vim.log.levels.WARN)
+            return
+        end
+        show_popup(entry.name, value or "", value or "", entry.name)
+    end)
 end
 
 --- Copy an entry's value (or, for a TOTP entry, its current code) to the register.
@@ -277,6 +294,31 @@ function M.add_totp()
                     end)
                 end,
             })
+        end,
+    })
+end
+
+--- Change the VALUE (password / TOTP secret) of the entry under the cursor — a masked prompt; the meta
+--- is kept. This is the "change the password in the wallet" action.
+---@param entry table
+local function change_value(entry)
+    local totp = entry.meta and entry.meta.totp == true
+    ui.input({
+        title = totp and ("New base32 TOTP secret for %s"):format(entry.name)
+            or ("New value for %s"):format(entry.name),
+        mask = true,
+        callback = function(ok, value)
+            if not ok or vim.trim(value) == "" then
+                return
+            end
+            api().set(entry.name, vim.trim(value), nil, function(sok, err)
+                if not sok then
+                    vim.notify("lvim-keyring: " .. (err or "failed"), vim.log.levels.WARN)
+                    return
+                end
+                vim.notify("lvim-keyring: changed " .. entry.name, vim.log.levels.INFO)
+                M.refresh()
+            end)
         end,
     })
 end
@@ -368,6 +410,7 @@ end
 
 local HELP = {
     { "add", "add a secret (name → value → meta)" },
+    { "change", "change the entry's value / password" },
     { "edit", "edit the entry's user metadata" },
     { "rename", "rename the entry" },
     { "delete", "delete the entry" },
@@ -400,6 +443,18 @@ end
 --- The footer action band: wallet-wide actions + the help chip.
 ---@return table[]
 local function build_footer()
+    -- A footer action that operates on the entry under the cursor (the content cursor stays put while the
+    -- footer sector is focused), or warns when the list is empty.
+    local function on_current(fn)
+        return function()
+            local e = cur_entry()
+            if e then
+                fn(e)
+            else
+                vim.notify("lvim-keyring: no entry under the cursor", vim.log.levels.WARN)
+            end
+        end
+    end
     return {
         {
             key = config.keymaps.add,
@@ -408,6 +463,8 @@ local function build_footer()
                 M.add()
             end,
         },
+        { key = config.keymaps.change, name = "change", run = on_current(change_value) },
+        { key = config.keymaps.delete, name = "delete", run = on_current(delete) },
         { key = config.keymaps.generate, name = "generate", run = generate_into },
         {
             key = config.keymaps.lock,
@@ -472,6 +529,12 @@ local function wire_keys(buf)
         local e = cur_entry()
         if e then
             edit_meta(e)
+        end
+    end)
+    key(k.change, function()
+        local e = cur_entry()
+        if e then
+            change_value(e)
         end
     end)
 end
