@@ -12,6 +12,7 @@
 // on lock/exit; `PR_SET_DUMPABLE(0)` blocks core dumps and non-root ptrace of the
 // unlocked key.
 
+mod credential;
 mod crypto;
 mod rpc;
 mod server;
@@ -31,6 +32,12 @@ use crate::server::{Config, Server};
 fn main() {
     harden();
     let args: Vec<String> = std::env::args().collect();
+
+    // The git-credential helper is a short-lived subcommand (blocking std sockets); it must run
+    // BEFORE any tokio runtime is built, and never starts the agent.
+    if args.get(1).map(String::as_str) == Some("git-credential") {
+        std::process::exit(credential::run(args.get(2).map(String::as_str).unwrap_or("")));
+    }
 
     // Mode selection from argv; everything else comes from the environment the Lua
     // side sets at spawn (with standalone defaults so the daemon is usable alone).

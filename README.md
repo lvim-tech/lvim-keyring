@@ -178,6 +178,30 @@ lvim-db's daemon reads that secret from the wallet's socket at connect time — 
 configuration needed. When the wallet is locked, the connection reports `the keyring is locked —
 :LvimKeyring unlock`; when the agent is not running, it says so.
 
+### lvim-forge tokens
+
+lvim-forge resolves its API token from the wallet automatically when installed: `forge/<host>` is
+tried between the `config` token and the `GITHUB_TOKEN`-style env var. Store one with a masked prompt:
+
+```vim
+:LvimForge auth store github.com
+```
+
+`:checkhealth lvim-forge` reports the token source as `keyring` once it resolves from the wallet.
+
+### git over HTTPS — the credential helper
+
+The daemon ships a git credential helper, so `git push`/`fetch` over HTTPS (from lvim-git or the
+terminal) read the token from the wallet with no per-repo setup. Wire it once:
+
+```sh
+git config --global credential.helper '!/absolute/path/to/lvim-keyring-daemon git-credential'
+```
+
+It looks up `git/<host>` first, then falls back to `forge/<host>` (a forge PAT is the HTTPS password
+for GitHub/GitLab), so one stored token serves both. When the wallet is locked or absent, the helper
+stays silent and git prompts as usual — it never blocks a push.
+
 ## Security
 
 **Protected against:**
@@ -213,8 +237,8 @@ configuration needed. When the wallet is locked, the connection reports `the key
 ## Health
 
 `:checkhealth lvim-keyring` reports the daemon binary, whether the agent is reachable over its socket,
-the vault's existence and lock state, the socket directory posture, and (later) the git credential
-helper.
+the vault's existence and lock state, the socket directory posture, and whether the git credential
+helper is wired.
 
 ## Highlights
 

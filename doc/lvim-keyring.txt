@@ -149,6 +149,17 @@ lvim-db's daemon reads that secret from the wallet's socket at connect time — 
 driver or plugin configuration needed. A locked wallet reports "the keyring is
 locked — :LvimKeyring unlock"; a stopped agent says so.
 
+lvim-forge resolves its API token from `forge/<host>` automatically (between the
+config token and the env var) when installed; store one with `:LvimForge auth
+store <host>`.
+
+git over HTTPS: the daemon ships a credential helper. Wire it once — >sh
+  git config --global credential.helper '!/path/to/lvim-keyring-daemon git-credential'
+<
+— and `git push`/`fetch` (from lvim-git or the terminal) read the token from the
+wallet: `git/<host>` first, then `forge/<host>`. A locked/absent wallet stays
+silent so git prompts as usual; it never blocks a push.
+
 ==============================================================================
 8. SECURITY                                        *lvim-keyring-security*
 
