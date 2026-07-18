@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Result};
@@ -29,9 +29,14 @@ use crate::crypto::KdfParams;
 use crate::rpc::{self, Request};
 use crate::vault::{self, Entry, Session};
 
-/// The sentinel error a locked `secret.*` call returns; the Lua client maps it to
-/// the unlock prompt. Kept exact so the mapping is a string compare, not a guess.
+/// The sentinel error a locked `secret.*` call returns after the unlock wait gives up. The Lua client
+/// maps it to a prompt too, but the primary flow is the daemon PARKING the request (see
+/// `wait_for_unlock`). Kept exact so the mapping is a string compare, not a guess.
 const LOCKED: &str = "locked";
+
+/// How long a `secret.*` call parks waiting for an unlock before giving up — long enough for the user
+/// to type the master password into the prompt the daemon triggered, short enough not to hang forever.
+const UNLOCK_WAIT: Duration = Duration::from_secs(120);
 
 /// Static configuration handed to the daemon at startup.
 pub struct Config {
@@ -65,6 +70,11 @@ struct Inner {
     /// Connected clients' output channels, for broadcast notifications.
     clients: Mutex<HashMap<u64, UnboundedSender<String>>>,
     next_client: AtomicU64,
+    /// Unlock parking: a locked `secret.*` call blocks on `unlock_cv` (broadcasting `vault.unlock_needed`
+    /// so the editor prompts) until the session unlocks or an explicit `vault.unlock_cancel`. The bool is
+    /// the ABORT flag — set by cancel so a dismissed prompt releases parked reads at once.
+    unlock_gate: Mutex<bool>,
+    unlock_cv: Condvar,
 }
 
 fn now_secs() -> u64 {
@@ -84,6 +94,8 @@ impl Server {
                 last_activity: Mutex::new(Instant::now()),
                 clients: Mutex::new(HashMap::new()),
                 next_client: AtomicU64::new(1),
+                unlock_gate: Mutex::new(false),
+                unlock_cv: Condvar::new(),
             }),
         }
     }
@@ -124,6 +136,45 @@ impl Server {
 
     fn broadcast_state(&self, locked: bool) {
         self.broadcast(rpc::notification("vault.state", json!({ "locked": locked })));
+    }
+
+    /// Signal every client that a locked secret was requested — the editor's lvim-keyring client pops
+    /// the master-password prompt in response.
+    fn broadcast_unlock_needed(&self) {
+        self.broadcast(rpc::notification("vault.unlock_needed", json!({})));
+    }
+
+    /// Wake every parked `secret.*` call (called after a successful unlock, and on cancel).
+    fn wake_unlock_waiters(&self) {
+        self.inner.unlock_cv.notify_all();
+    }
+
+    /// Park the caller until the vault unlocks: broadcast `vault.unlock_needed` (so the editor prompts),
+    /// then block on the condvar until the session is unlocked (→ true), an explicit cancel arrives, or
+    /// the timeout elapses (→ false, i.e. `"locked"`). Runs on the blocking dispatch thread, so blocking
+    /// here never stalls the async reactor.
+    fn wait_for_unlock(&self, timeout: Duration) -> bool {
+        if !self.is_locked() {
+            return true;
+        }
+        self.broadcast_unlock_needed();
+        let deadline = Instant::now() + timeout;
+        let mut abort = self.inner.unlock_gate.lock().unwrap();
+        *abort = false; // fresh wait cycle
+        loop {
+            if !self.is_locked() {
+                return true;
+            }
+            if *abort {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (guard, _timed_out) = self.inner.unlock_cv.wait_timeout(abort, deadline - now).unwrap();
+            abort = guard;
+        }
     }
 
     // ── lock state ───────────────────────────────────────────────────────────
@@ -187,6 +238,7 @@ impl Server {
             "vault.create" => self.create(params),
             "vault.unlock" => self.unlock(params),
             "vault.lock" => self.do_lock(),
+            "vault.unlock_cancel" => self.unlock_cancel(),
             "vault.status" => Ok(self.status()),
             "vault.rotate" => self.rotate(params),
             "secret.get" => self.secret_get(params),
@@ -258,6 +310,7 @@ impl Server {
         *self.inner.session.lock().unwrap() = Some(session);
         *self.inner.fail_count.lock().unwrap() = 0;
         self.broadcast_state(false);
+        self.wake_unlock_waiters();
         Ok(json!({}))
     }
 
@@ -268,6 +321,7 @@ impl Server {
                 *self.inner.session.lock().unwrap() = Some(session);
                 *self.inner.fail_count.lock().unwrap() = 0;
                 self.broadcast_state(false);
+        self.wake_unlock_waiters();
                 Ok(json!({ "entries": self.summaries().unwrap_or(json!([])) }))
             }
             Err(e) => {
@@ -291,6 +345,17 @@ impl Server {
         Ok(json!({}))
     }
 
+    /// The editor dismissed the unlock prompt — release every parked `secret.*` call at once (they
+    /// return `"locked"`) instead of waiting out the timeout.
+    fn unlock_cancel(&self) -> Result<Json> {
+        {
+            let mut abort = self.inner.unlock_gate.lock().unwrap();
+            *abort = true;
+        }
+        self.wake_unlock_waiters();
+        Ok(json!({}))
+    }
+
     fn rotate(&self, params: Json) -> Result<Json> {
         let p: RotateParam = serde_json::from_value(params)?;
         let session = vault::rotate(
@@ -302,13 +367,18 @@ impl Server {
         *self.inner.session.lock().unwrap() = Some(session);
         *self.inner.fail_count.lock().unwrap() = 0;
         self.broadcast_state(false);
+        self.wake_unlock_waiters();
         Ok(json!({}))
     }
 
     // ── secret operations (require unlock) ───────────────────────────────────
 
-    /// Run `f` against the unlocked session, then persist. `"locked"` if locked.
+    /// Run `f` against the unlocked session, then persist. Locked → PARK until unlock (or `"locked"` on
+    /// timeout/cancel).
     fn with_session<R>(&self, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
+        if self.is_locked() && !self.wait_for_unlock(UNLOCK_WAIT) {
+            bail!(LOCKED);
+        }
         let mut guard = self.inner.session.lock().unwrap();
         let session = guard.as_mut().ok_or_else(|| anyhow!(LOCKED))?;
         let r = f(session)?;
@@ -316,8 +386,12 @@ impl Server {
         Ok(r)
     }
 
-    /// Read-only access to the unlocked session (no save). `"locked"` if locked.
+    /// Read-only access to the unlocked session (no save). Locked → PARK until unlock (or `"locked"` on
+    /// timeout/cancel) — this is what makes a `{{ vault }}` resolve transparently trigger the prompt.
     fn read_session<R>(&self, f: impl FnOnce(&Session) -> Result<R>) -> Result<R> {
+        if self.is_locked() && !self.wait_for_unlock(UNLOCK_WAIT) {
+            bail!(LOCKED);
+        }
         let guard = self.inner.session.lock().unwrap();
         let session = guard.as_ref().ok_or_else(|| anyhow!(LOCKED))?;
         f(session)
@@ -408,6 +482,9 @@ impl Server {
     }
 
     fn secret_list(&self) -> Result<Json> {
+        if self.is_locked() && !self.wait_for_unlock(UNLOCK_WAIT) {
+            bail!(LOCKED);
+        }
         let list = self.summaries().ok_or_else(|| anyhow!(LOCKED))?;
         Ok(json!({ "entries": list }))
     }

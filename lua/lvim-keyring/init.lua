@@ -23,6 +23,8 @@ local M = {}
 local unlocked = false
 ---@type fun(state: { locked: boolean })[] on_state subscribers
 local state_handlers = {}
+---@type boolean one unlock prompt at a time (dedupes the daemon's vault.unlock_needed signal)
+local prompting = false
 
 --- Merge user opts into the live config, wire the lock-state cache + commands.
 ---@param opts LvimKeyringConfig?
@@ -37,8 +39,29 @@ function M.setup(opts)
             pcall(h, { locked = not unlocked })
         end
     end)
+    -- THE transparent-unlock seam: the daemon PARKS a locked secret read (e.g. an lvim-db `{{ vault }}`
+    -- resolve) and signals here; the wallet — not the consumer — pops the master-password prompt. On
+    -- cancel we tell the daemon to release the parked readers at once (they get `locked`).
+    daemon.on("vault.unlock_needed", function()
+        if prompting or unlocked then
+            return
+        end
+        prompting = true
+        require("lvim-keyring.ui.prompt").unlock(function(ok)
+            prompting = false
+            if not ok then
+                daemon.request("vault.unlock_cancel", nil, function() end)
+            end
+        end)
+    end)
     require("lvim-keyring.commands").setup()
     require("lvim-utils.cursor").register({ ft = { "LvimKeyring" } })
+    -- Eager connect/spawn so the agent is RUNNING and this client is LISTENING from startup — that is
+    -- what lets the wallet own the unlock prompt for a `{{ vault }}` resolve even before the user has
+    -- opened the panel (a light, locked, idle process until the first unlock; it dies with the editor).
+    vim.schedule(function()
+        daemon.ensure(function() end)
+    end)
 end
 
 -- ─── lock state ──────────────────────────────────────────────────────────────

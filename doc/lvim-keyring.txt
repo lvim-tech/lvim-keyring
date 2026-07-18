@@ -166,8 +166,11 @@ lvim-db's connection form accepts credential TEMPLATES; add the wallet as one: >
   Password:  {{ vault "db/prod" }}
 <
 lvim-db's daemon reads that secret from the wallet's socket at connect time — no
-driver or plugin configuration needed. A locked wallet reports "the keyring is
-locked — :LvimKeyring unlock"; a stopped agent says so.
+driver or plugin configuration needed. If the wallet is LOCKED, the daemon parks
+the resolve and lvim-keyring pops its own master-password prompt (the agent runs
+from editor startup, listening for exactly this); the connect proceeds once you
+unlock. The consumer does nothing — the wallet owns the unlock. This is the
+general contract for any {{ vault }} / kr.get consumer.
 
 lvim-forge resolves its API token from `forge/<host>` automatically (between the
 config token and the env var) when installed; store one with `:LvimForge auth

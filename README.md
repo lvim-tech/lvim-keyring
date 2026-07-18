@@ -24,6 +24,10 @@ the last editor exits) zeroes the key at once.
 - **The agent** derives and holds the key only while unlocked. It auto-locks after idle time, on an
   explicit lock, and when the last editor disconnects. Every secret value crosses into the editor only
   at the moment a consumer explicitly asks for it.
+- **Unlock is on-demand and wallet-owned.** A consumer just uses a secret (`{{ vault }}` / `kr.get`);
+  if the wallet is locked, the daemon PARKS that read and signals the editor, and lvim-keyring pops the
+  master-password prompt itself — then serves the parked read. Consumers never manage unlock. The agent
+  starts with the editor (a light, locked, idle process) so it is always listening for this.
 - **The panel** browses entries grouped by namespace; it never renders a value. Reveal is an explicit
   keypress into a transient popup; copy puts the value in a register with an auto-clear timer.
 
@@ -201,8 +205,10 @@ Password:  {{ vault "db/prod" }}
 ```
 
 lvim-db's daemon reads that secret from the wallet's socket at connect time — no driver or plugin
-configuration needed. When the wallet is locked, the connection reports `the keyring is locked —
-:LvimKeyring unlock`; when the agent is not running, it says so.
+configuration needed. If the wallet is **locked**, the daemon PARKS the resolve and lvim-keyring pops
+its own master-password prompt (the agent runs from editor startup and listens for exactly this); the
+connect then proceeds transparently once you unlock. The consumer plugin does nothing — the wallet
+owns the unlock. This is the general contract for any `{{ vault }}` / `kr.get` consumer.
 
 ### lvim-forge tokens
 
