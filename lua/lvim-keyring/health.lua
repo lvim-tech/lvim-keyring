@@ -21,6 +21,10 @@ local function check_config(h)
         h.error("config.lock.timeout_minutes must be a number ≥ 0 (0 = never auto-lock)")
         ok = false
     end
+    if type(config.lock.on_exit) ~= "boolean" then
+        h.error("config.lock.on_exit must be a boolean (true = lock the wallet when the editor quits)")
+        ok = false
+    end
     if type(config.kdf.memory_mib) ~= "number" or config.kdf.memory_mib < 8 then
         h.error("config.kdf.memory_mib must be a number ≥ 8")
         ok = false

@@ -62,6 +62,29 @@ function M.setup(opts)
     vim.schedule(function()
         daemon.ensure(function() end)
     end)
+    -- Lock the wallet when the editor quits (config.lock.on_exit, default true). The agent is SHARED across
+    -- editors, so this locks it for ALL of them: closing any nvim zeroizes the key at once, and a restart
+    -- (or a still-open second editor's next secret use) always re-prompts for the master password. We send
+    -- `vault.lock` then pump the loop briefly so the request actually reaches the daemon before this process
+    -- dies — a fire-and-forget write would be lost as nvim exits. Skipped when the agent is absent or already
+    -- locked (nothing to do, and we must not spawn it on the way out).
+    if config.lock.on_exit then
+        vim.api.nvim_create_autocmd("VimLeavePre", {
+            group = vim.api.nvim_create_augroup("LvimKeyringLockOnExit", { clear = true }),
+            callback = function()
+                if not (daemon.is_running() and unlocked) then
+                    return
+                end
+                local done = false
+                daemon.request("vault.lock", nil, function()
+                    done = true
+                end)
+                vim.wait(1000, function()
+                    return done
+                end, 20)
+            end,
+        })
+    end
 end
 
 -- ─── lock state ──────────────────────────────────────────────────────────────

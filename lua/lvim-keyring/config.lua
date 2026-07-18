@@ -15,6 +15,8 @@
 
 ---@class LvimKeyringLock
 ---@field timeout_minutes integer  idle auto-lock; 0 = never
+---@field on_exit boolean          lock the wallet when the editor quits (VimLeavePre → `vault.lock`). With a
+---                                SHARED agent this locks for EVERY editor, so any nvim's exit re-locks it
 
 ---@class LvimKeyringClipboard
 ---@field register string      the register a value is yanked into (e.g. "+")
@@ -51,7 +53,7 @@ local M = {
     linger_seconds = 0,
     persist = false,
     kdf = { memory_mib = 64, iterations = 3, parallelism = 4 },
-    lock = { timeout_minutes = 15 },
+    lock = { timeout_minutes = 15, on_exit = true },
     clipboard = { register = "+", clear_seconds = 30 },
     generate = { length = 24, symbols = true },
     ui = { layout = "float" },

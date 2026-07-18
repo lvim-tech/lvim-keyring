@@ -25,8 +25,8 @@ derivation + XChaCha20-Poly1305 authenticated encryption).
 The daemon is a per-user AGENT: it holds the unlocked material in its own
 memory (never in the editor), speaks over a per-user unix socket, and is shared
 by every editor instance and by lvim-db — one unlock, everywhere, until you
-lock. Locking (manually, on idle, or when the last editor exits) zeroes the key
-at once.
+lock. Locking (manually, on idle, when the editor quits, or when the last editor
+exits) zeroes the key at once.
 
 The vault is ONE sealed file — by default `stdpath("data")/lvim-keyring/
 keyring.vault` (the set's `stdpath("data")/lvim-<plugin>/` convention), overridable
@@ -67,7 +67,10 @@ backend must be built (see `:checkhealth lvim-keyring`).
       linger_seconds = 0,      -- daemon lifetime after the last client disconnects
       persist = false,         -- keep the agent past the last editor (terminal git); idle-lock still applies
       kdf = { memory_mib = 64, iterations = 3, parallelism = 4 }, -- Argon2id (create/rotate)
-      lock = { timeout_minutes = 15 },  -- idle auto-lock; 0 = never
+      lock = {
+          timeout_minutes = 15,  -- idle auto-lock; 0 = never
+          on_exit = true,        -- lock when the editor quits (shared agent → any nvim's exit re-locks it)
+      },
       clipboard = { register = "+", clear_seconds = 30 },  -- copy target + auto-clear
       generate = { length = 24, symbols = true },
       ui = { layout = "float" },  -- "float" | "area" | "bottom"
@@ -194,7 +197,8 @@ Protected against:
     the associated data — a bit-flip / param downgrade / salt swap fail closed.
   - Other users: socket dir 0700, socket 0600, peer-uid check; no core dumps /
     non-root ptrace of the daemon.
-  - Forgotten sessions: idle auto-lock, lock-on-last-editor-exit, explicit lock,
+  - Forgotten sessions: idle auto-lock, lock-on-editor-exit (any editor),
+    lock-on-last-editor-exit, explicit lock,
     clipboard auto-clear.
 
 Honest limitations:

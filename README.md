@@ -8,8 +8,8 @@ wallet with no configuration beyond the template.
 The crypto lives entirely in a small **Rust daemon** (Argon2id key derivation + XChaCha20-Poly1305
 authenticated encryption). The daemon is a per-user **agent**: it holds the unlocked material in its
 own memory (never in the editor), speaks over a per-user unix socket, and is shared by every editor
-instance and by lvim-db — one unlock, everywhere, until you lock. Locking (manually, on idle, or when
-the last editor exits) zeroes the key at once.
+instance and by lvim-db — one unlock, everywhere, until you lock. Locking (manually, on idle, when the
+editor quits, or when the last editor exits) zeroes the key at once.
 
 ## How it works
 
@@ -22,8 +22,9 @@ the last editor exits) zeroes the key at once.
   stronger parameters. A wrong password fails the authentication check — there is nothing else to
   guess.
 - **The agent** derives and holds the key only while unlocked. It auto-locks after idle time, on an
-  explicit lock, and when the last editor disconnects. Every secret value crosses into the editor only
-  at the moment a consumer explicitly asks for it.
+  explicit lock, when the editor quits (`lock.on_exit`, default on — and since the agent is shared, ANY
+  editor's exit locks it for all of them), and when the last editor disconnects. Every secret value
+  crosses into the editor only at the moment a consumer explicitly asks for it.
 - **Unlock is on-demand and wallet-owned.** A consumer just uses a secret (`{{ vault }}` / `kr.get`);
   if the wallet is locked, the daemon PARKS that read and signals the editor, and lvim-keyring pops the
   master-password prompt itself — then serves the parked read. Consumers never manage unlock. The agent
@@ -80,7 +81,10 @@ require("lvim-keyring").setup({
     linger_seconds = 0, -- daemon lifetime after the last client disconnects (0 = lock + die with the last editor)
     persist = false, -- keep the agent alive past the last editor (for terminal git); idle auto-lock still applies
     kdf = { memory_mib = 64, iterations = 3, parallelism = 4 }, -- Argon2id, applied at create/rotate
-    lock = { timeout_minutes = 15 }, -- idle auto-lock; 0 = never
+    lock = {
+        timeout_minutes = 15, -- idle auto-lock; 0 = never
+        on_exit = true, -- lock when the editor quits; the agent is SHARED, so any nvim's exit re-locks it
+    },
     clipboard = { register = "+", clear_seconds = 30 }, -- copy target + auto-clear (0 = never clear)
     generate = { length = 24, symbols = true }, -- generated-password defaults
     ui = { layout = "float" }, -- panel layout: "float" | "area" | "bottom"
@@ -247,7 +251,7 @@ stays silent and git prompts as usual — it never blocks a push.
 - **Other users on the machine.** The socket directory is `0700`, the socket `0600`, and a connecting
   peer's uid is checked; `$XDG_RUNTIME_DIR` is a per-user tmpfs. Core dumps and non-root ptrace of the
   daemon are blocked.
-- **Forgotten sessions.** Idle auto-lock, lock-on-last-editor-exit, an explicit lock, and a clipboard
+- **Forgotten sessions.** Idle auto-lock, lock-on-editor-exit (default; any editor), lock-on-last-editor-exit, an explicit lock, and a clipboard
   auto-clear.
 
 **Honest limitations** — stated so you can decide if they matter to you:
