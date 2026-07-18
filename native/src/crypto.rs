@@ -12,11 +12,13 @@
 // buffer are wiped from memory on drop (on lock, on rotate, on daemon exit) — the
 // point of doing crypto out-of-process is undone if the key lingers in RAM.
 
+use std::ops::Deref;
+
 use anyhow::{anyhow, Result};
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Bytes of the derived key / the AEAD key.
 pub const KEY_LEN: usize = 32;
@@ -59,8 +61,57 @@ impl KdfParams {
     }
 }
 
-/// A 32-byte key that zeroes itself on drop.
-pub type Key32 = Zeroizing<[u8; KEY_LEN]>;
+/// The derived 32-byte vault key. It lives in a HEAP box with a stable address so the page holding
+/// it can be `mlock`ed — kept out of swap / hibernation for the key's lifetime — and it is both
+/// zeroized AND munlocked on drop (on lock, on rotate, on exit). The lock is exactly `KEY_LEN` bytes,
+/// far under any `RLIMIT_MEMLOCK`, so it never fights the 64 MiB Argon2 allocation (which is why this
+/// is a per-key lock, not `mlockall`). `Deref` to `[u8; KEY_LEN]` so `seal`/`open` take it unchanged.
+pub struct Key32 {
+    inner: Box<[u8; KEY_LEN]>,
+}
+
+impl Key32 {
+    /// A zeroed, mlocked key buffer (filled by the KDF).
+    fn zeroed() -> Self {
+        let inner = Box::new([0u8; KEY_LEN]);
+        lock_pages(inner.as_ptr(), KEY_LEN);
+        Key32 { inner }
+    }
+}
+
+impl Deref for Key32 {
+    type Target = [u8; KEY_LEN];
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl Drop for Key32 {
+    fn drop(&mut self) {
+        self.inner.zeroize();
+        unlock_pages(self.inner.as_ptr(), KEY_LEN);
+    }
+}
+
+/// mlock `len` bytes at `ptr` — best-effort (a failure just means the key may reach swap; it never
+/// breaks the daemon). Linux/unix only.
+fn lock_pages(ptr: *const u8, len: usize) {
+    #[cfg(unix)]
+    unsafe {
+        libc::mlock(ptr as *const libc::c_void, len);
+    }
+    #[cfg(not(unix))]
+    let _ = (ptr, len);
+}
+
+fn unlock_pages(ptr: *const u8, len: usize) {
+    #[cfg(unix)]
+    unsafe {
+        libc::munlock(ptr as *const libc::c_void, len);
+    }
+    #[cfg(not(unix))]
+    let _ = (ptr, len);
+}
 
 /// Derive the 32-byte vault key from `password` + `salt` under `params`.
 pub fn derive_key(password: &[u8], salt: &[u8; SALT_LEN], params: KdfParams) -> Result<Key32> {
@@ -68,9 +119,9 @@ pub fn derive_key(password: &[u8], salt: &[u8; SALT_LEN], params: KdfParams) -> 
     let p = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(KEY_LEN))
         .map_err(|e| anyhow!("argon2 params: {e}"))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, p);
-    let mut key: Key32 = Zeroizing::new([0u8; KEY_LEN]);
+    let mut key = Key32::zeroed();
     argon2
-        .hash_password_into(password, salt, key.as_mut_slice())
+        .hash_password_into(password, salt, key.inner.as_mut_slice())
         .map_err(|e| anyhow!("key derivation failed: {e}"))?;
     Ok(key)
 }
