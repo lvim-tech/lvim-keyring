@@ -223,6 +223,83 @@ function M.totp(name, cb)
     end)
 end
 
+--- Whether an entry NAME already exists in the wallet: `cb(exists, err)`. Names/meta only (no value
+--- read); used by consumers migrating plaintext secrets to avoid clobbering a wallet entry.
+---@param name string
+---@param cb fun(exists: boolean?, err: string?)
+function M.has(name, cb)
+    M.list(function(entries, err)
+        if err then
+            cb(nil, err)
+            return
+        end
+        for _, e in ipairs(entries or {}) do
+            if e.name == name then
+                cb(true)
+                return
+            end
+        end
+        cb(false)
+    end)
+end
+
+--- THE universal migration seam: move plaintext secrets INTO the wallet. A consumer plugin DETECTS its
+--- own plaintext (only it knows where its secrets live), builds `candidates = { { name, value, meta? } }`,
+--- and hands them here; lvim-keyring does the common part — ensure_unlocked, ONE confirm (with the count),
+--- store each that is not already present — then the consumer rewrites its own store to reference the
+--- wallet. An entry already in the wallet is SKIPPED (never clobbered). `cb(outcome, err)` where
+--- `outcome = { stored = string[], skipped = string[], failed = string[] }` (nil + err on cancel/locked).
+---@param candidates { name: string, value: string, meta: table? }[]
+---@param cb fun(outcome: { stored: string[], skipped: string[], failed: string[] }?, err: string?)
+function M.migrate(candidates, cb)
+    cb = cb or function() end
+    candidates = candidates or {}
+    if #candidates == 0 then
+        cb({ stored = {}, skipped = {}, failed = {} })
+        return
+    end
+    M.ensure_unlocked(function(ok, uerr)
+        if not ok then
+            cb(nil, uerr or "locked")
+            return
+        end
+        require("lvim-ui").confirm({
+            prompt = ("Move %d plaintext secret(s) into the encrypted wallet?"):format(#candidates),
+            callback = function(yes)
+                if not yes then
+                    cb(nil, "cancelled")
+                    return
+                end
+                M.list(function(existing)
+                    local present = {}
+                    for _, e in ipairs(existing or {}) do
+                        present[e.name] = true
+                    end
+                    local outcome = { stored = {}, skipped = {}, failed = {} }
+                    local pending = #candidates
+                    local function step()
+                        pending = pending - 1
+                        if pending == 0 then
+                            cb(outcome)
+                        end
+                    end
+                    for _, c in ipairs(candidates) do
+                        if present[c.name] then
+                            table.insert(outcome.skipped, c.name)
+                            step()
+                        else
+                            M.set(c.name, c.value, c.meta, function(sok)
+                                table.insert(sok and outcome.stored or outcome.failed, c.name)
+                                step()
+                            end)
+                        end
+                    end
+                end)
+            end,
+        })
+    end)
+end
+
 --- A NAMESPACED view of the wallet: every name is prefixed `namespace/`. A consumer passes its own
 --- PARENT once — `local kr = require("lvim-keyring").scope("forge")` — then uses BARE names
 --- (`kr.get(host, cb)` → resolves `forge/<host>`), instead of baking the prefix into every call and

@@ -159,7 +159,16 @@ kr.delete(name, cb) -- kr.rename(from, to, cb) -- kr.list(cb) -- names + meta on
 kr.generate({ length = 24, symbols = true, store_as = "db/new" }, function(value, err) end)
 kr.totp("forge/github.com-2fa", function(t, err) end) -- { code, remaining, period } for a TOTP entry
 kr.is_unlocked() -- boolean (event-refreshed) -- kr.on_state(function(s) end) for a statusline glyph
+kr.has("db/prod", function(exists, err) end) -- is the name already stored? (names only, no value)
+kr.migrate({ { name = "db/prod", value = "…" } }, function(outcome, err) end) -- move plaintext IN
 ```
+
+**Migrating plaintext secrets.** `migrate` is the universal seam: a plugin detects its OWN plaintext
+(only it knows where its secrets live), hands `{ name, value, meta? }` candidates here, and lvim-keyring
+does the common part — unlock, ONE confirm, store each not-already-present — returning
+`{ stored, skipped, failed }` so the caller can rewrite its store to reference the wallet. lvim-db uses
+this for `:LvimDb keyring-migrate` (it scans saved connections for literal passwords, stores them under
+`db/<name>`, and rewrites each to `{{ vault "db/<name>" }}`).
 
 **Namespaces — register your parent once, don't hardcode it here.** lvim-keyring hardcodes NO consumer
 namespace: only `common` (catch-all) and `default` (fallback). A plugin registers its own parent once,

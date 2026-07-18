@@ -135,7 +135,15 @@ lvim-keyring never depends on, or keeps a list of, its consumers. >lua
   kr.generate({ length = 24, symbols = true, store_as = "db/new" }, function(v, e) end)
   kr.totp("forge/x-2fa", function(t, err) end) -- { code, remaining, period } for a TOTP entry
   kr.is_unlocked() ; kr.on_state(function(s) end) -- for a statusline glyph
+  kr.has(name, function(exists, err) end)         -- already stored? (names only)
+  kr.migrate({ { name, value, meta? } }, function(outcome, err) end) -- move plaintext IN
 <
+`migrate` is the universal seam: a plugin detects its OWN plaintext (only it knows
+where its secrets live), hands { name, value } candidates here, and lvim-keyring
+unlocks, confirms ONCE, and stores each not-already-present — returning
+{ stored, skipped, failed } so the caller can rewrite its store. lvim-db's
+`:LvimDb keyring-migrate` uses it (scan connections → store under db/<name> →
+rewrite each to `{{ vault "db/<name>" }}`).
 Namespaces — register your parent once; lvim-keyring hardcodes NO consumer
 namespace (only common + default). A plugin registers its own parent with an
 icon + accent, pcall-guarded, then everyone uses it: >lua
