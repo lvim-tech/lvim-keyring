@@ -40,11 +40,37 @@ local function display_name(name)
     return name:match("^[^/]+/(.+)$") or name
 end
 
---- The accent (palette key / "#rrggbb") for a namespace: its own colour, else the default.
+local namespaces = require("lvim-keyring.namespaces")
+
+--- The accent (palette key / "#rrggbb") for a namespace: a REGISTERED parent's accent, else `common`
+--- for the catch-all, else the `default` fallback. Nothing per-consumer is hardcoded here.
 ---@param ns string
 ---@return string
 function M.accent(ns)
-    return config.colors[ns] or config.colors.default
+    local reg = namespaces.get(ns)
+    if reg and reg.accent then
+        return reg.accent
+    end
+    return ns == "common" and config.colors.common or config.colors.default
+end
+
+--- The entry badge glyph for a namespace: a registered parent's icon, else the default key icon.
+---@param ns string
+---@return string
+function M.icon(ns)
+    local reg = namespaces.get(ns)
+    return (reg and reg.icon) or config.icons.entry
+end
+
+--- The highlight-group SUFFIX for a namespace: the registered parent's own suffix, else "Common" for
+--- the catch-all, else "Default". Matches the groups highlights.build/namespace_groups define.
+---@param ns string
+---@return string
+function M.group_suffix(ns)
+    if namespaces.get(ns) then
+        return highlights.suffix(ns)
+    end
+    return ns == "common" and "Common" or "Default"
 end
 
 --- A short "updated N ago" string from an epoch (seconds). Empty when unknown.
@@ -144,7 +170,7 @@ end
 ---@return table row
 function M.entry_row(entry, registry, on_pick, namew)
     local ns = M.namespace(entry.name)
-    local sfx = highlights.suffix(ns)
+    local sfx = M.group_suffix(ns)
     local rowname = "kr__" .. entry.name
     registry[rowname] = entry
 
@@ -165,7 +191,7 @@ function M.entry_row(entry, registry, on_pick, namew)
         name = rowname,
         flat = true,
         tight = true,
-        icon = badge(config.icons.entry),
+        icon = badge(M.icon(ns)),
         icon_hl = "LvimKeyringBadge" .. sfx,
         label = label,
         label_spans = spans,

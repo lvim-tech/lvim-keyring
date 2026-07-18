@@ -264,6 +264,7 @@ local function spawn_env()
         LVIM_KEYRING_KDF_P = tostring(config.kdf.parallelism or 4),
         LVIM_KEYRING_LOCK_TIMEOUT = tostring((config.lock.timeout_minutes or 15) * 60),
         LVIM_KEYRING_LINGER = tostring(config.linger_seconds or 0),
+        LVIM_KEYRING_PERSIST = config.persist and "1" or "0",
     }
     if config.vault_path and config.vault_path ~= "" then
         env.LVIM_KEYRING_VAULT = config.vault_path

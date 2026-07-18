@@ -16,6 +16,7 @@ mod credential;
 mod crypto;
 mod rpc;
 mod server;
+mod totp;
 mod vault;
 
 use std::path::PathBuf;
@@ -88,11 +89,13 @@ fn config_from_env(_socket_override: Option<PathBuf>) -> Config {
     };
     let lock_timeout = Duration::from_secs(env_u64("LVIM_KEYRING_LOCK_TIMEOUT", 15 * 60));
     let linger = Duration::from_secs(env_u64("LVIM_KEYRING_LINGER", 0));
+    let persist = std::env::var("LVIM_KEYRING_PERSIST").ok().as_deref() == Some("1");
     Config {
         vault_path,
         kdf,
         lock_timeout,
         linger,
+        persist,
     }
 }
 
@@ -255,10 +258,18 @@ async fn handle_conn(server: Server, stream: UnixStream, sock_path: PathBuf) {
         }
     }
 
+    // Unregister BEFORE awaiting the writer: the clients map holds a clone of this connection's
+    // sender, so the writer's receiver only runs dry once BOTH `tx` and that clone are gone — drop
+    // one and remove the other, then the writer task returns.
     drop(tx);
-    let _ = writer.await;
     let remaining = server.unregister_client(client_id);
+    let _ = writer.await;
     if remaining == 0 {
+        // Persist mode: keep running (unlocked, until idle-lock / SIGTERM) so terminal git can still
+        // resolve credentials with no editor open. The socket stays.
+        if server.persist() {
+            return;
+        }
         let linger = server.linger();
         if linger.is_zero() {
             server.lock();

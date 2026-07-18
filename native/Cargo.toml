@@ -43,3 +43,8 @@ zeroize = { version = "1", features = ["derive"] }
 # prctl(PR_SET_DUMPABLE, 0) at startup: no core dumps of the unlocked key, and no
 # non-root ptrace attach to scrape it.
 libc = "0.2"
+
+# ── TOTP (RFC 6238): HMAC-SHA1 over the time counter, base32 secret ───────────
+hmac = "0.12"
+sha1 = "0.10"
+data-encoding = "2"

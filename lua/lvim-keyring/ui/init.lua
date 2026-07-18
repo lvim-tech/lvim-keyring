@@ -10,7 +10,6 @@
 ---@module "lvim-keyring.ui"
 
 local config = require("lvim-keyring.config")
-local highlights = require("lvim-keyring.highlights")
 local rows = require("lvim-keyring.ui.rows")
 local ui = require("lvim-ui")
 
@@ -79,7 +78,7 @@ local function build_rows()
             for _, e in ipairs(g.entries) do
                 children[#children + 1] = rows.entry_row(e, state.registry, function(entry, _close)
                     -- <CR> on a row reveals the value in place (panel stays open); never closes.
-                    M.reveal(entry.name)
+                    M.reveal(entry)
                 end, namew)
             end
             shown = shown + #g.entries
@@ -92,7 +91,7 @@ local function build_rows()
             expanded,
             children,
             accent,
-            "LvimKeyringBadge" .. highlights.suffix(g.ns)
+            "LvimKeyringBadge" .. rows.group_suffix(g.ns)
         )
     end
     state.counts = { current = shown, total = #state.entries }
@@ -132,50 +131,92 @@ end
 
 -- ── actions ───────────────────────────────────────────────────────────────────
 
---- Reveal a secret's VALUE in a transient popup (explicit action; the list never shows values).
----@param name string
-function M.reveal(name)
-    api().get(name, function(value, err)
+--- Whether an entry is a TOTP entry (its value is a base32 2FA secret → show the CODE, not the secret).
+---@param entry table
+---@return boolean
+local function is_totp(entry)
+    return entry.meta and entry.meta.totp == true
+end
+
+--- Show `text` in a transient popup titled `title`.
+---@param title string
+---@param text string
+local function show_popup(title, text)
+    ui.info({ text }, {
+        title = title,
+        footer = false,
+        close_keys = { "q", "<Esc>", "<CR>", config.keymaps.reveal },
+        highlights = { { line = 0, col_start = 0, col_end = -1, hl_group = "LvimKeyringValue" } },
+    })
+end
+
+--- Reveal an entry's value (or, for a TOTP entry, its CURRENT code + countdown) in a transient popup.
+--- The list never shows values; this is the explicit reveal.
+---@param entry table
+function M.reveal(entry)
+    if is_totp(entry) then
+        api().totp(entry.name, function(t, err)
+            if err or not t then
+                vim.notify("lvim-keyring: " .. (err or "no code"), vim.log.levels.WARN)
+                return
+            end
+            show_popup(entry.name .. "  (TOTP)", ("%s   ·   expires in %ds"):format(t.code, t.remaining))
+        end)
+        return
+    end
+    api().get(entry.name, function(value, err)
         if err then
             vim.notify("lvim-keyring: " .. err, vim.log.levels.WARN)
             return
         end
-        ui.info({ value or "" }, {
-            title = name,
-            footer = false,
-            close_keys = { "q", "<Esc>", "<CR>", config.keymaps.reveal },
-            highlights = { { line = 0, col_start = 0, col_end = -1, hl_group = "LvimKeyringValue" } },
-        })
+        show_popup(entry.name, value or "")
     end)
 end
 
---- Copy a secret's value to the configured register, with an auto-clear timer that clears ONLY if the
---- register still holds our value (so a later yank is never clobbered).
----@param name string
-function M.copy(name)
-    api().get(name, function(value, err)
+--- Yank `value` to the configured register with an auto-clear timer that clears ONLY if the register
+--- still holds our value (so a later yank is never clobbered).
+---@param value string
+---@param label string
+local function yank(value, label)
+    local reg = config.clipboard.register
+    vim.fn.setreg(reg, value)
+    local secs = config.clipboard.clear_seconds or 0
+    if secs > 0 then
+        vim.defer_fn(function()
+            if vim.fn.getreg(reg) == value then
+                vim.fn.setreg(reg, "")
+            end
+        end, secs * 1000)
+    end
+    vim.notify(
+        ("lvim-keyring: copied %s to register %s%s"):format(
+            label,
+            reg,
+            secs > 0 and (" (auto-clears in %ds)"):format(secs) or ""
+        ),
+        vim.log.levels.INFO
+    )
+end
+
+--- Copy an entry's value (or, for a TOTP entry, its current code) to the register.
+---@param entry table
+function M.copy(entry)
+    if is_totp(entry) then
+        api().totp(entry.name, function(t, err)
+            if err or not t then
+                vim.notify("lvim-keyring: " .. (err or "no code"), vim.log.levels.WARN)
+                return
+            end
+            yank(t.code, entry.name .. " code")
+        end)
+        return
+    end
+    api().get(entry.name, function(value, err)
         if err or not value then
             vim.notify("lvim-keyring: " .. (err or "no value"), vim.log.levels.WARN)
             return
         end
-        local reg = config.clipboard.register
-        vim.fn.setreg(reg, value)
-        local secs = config.clipboard.clear_seconds or 0
-        if secs > 0 then
-            vim.defer_fn(function()
-                if vim.fn.getreg(reg) == value then
-                    vim.fn.setreg(reg, "")
-                end
-            end, secs * 1000)
-        end
-        vim.notify(
-            ("lvim-keyring: copied %s to register %s%s"):format(
-                name,
-                reg,
-                secs > 0 and (" (auto-clears in %ds)"):format(secs) or ""
-            ),
-            vim.log.levels.INFO
-        )
+        yank(value, entry.name)
     end)
 end
 
@@ -201,6 +242,37 @@ function M.add()
                             return
                         end
                         vim.notify("lvim-keyring: stored " .. name, vim.log.levels.INFO)
+                        M.refresh()
+                    end)
+                end,
+            })
+        end,
+    })
+end
+
+--- Add a TOTP (2FA) entry: name → masked base32 secret, stored with `meta.totp = true` so the panel
+--- shows the CURRENT code (via reveal / copy) instead of the raw secret.
+function M.add_totp()
+    ui.input({
+        title = "TOTP entry name (e.g. forge/github.com-2fa)",
+        callback = function(ok, name)
+            if not ok or vim.trim(name) == "" then
+                return
+            end
+            name = vim.trim(name)
+            ui.input({
+                title = "Base32 TOTP secret for " .. name,
+                mask = true,
+                callback = function(ok2, secret)
+                    if not ok2 or vim.trim(secret) == "" then
+                        return
+                    end
+                    api().set(name, vim.trim(secret), { totp = true }, function(sok, err)
+                        if not sok then
+                            vim.notify("lvim-keyring: " .. (err or "failed"), vim.log.levels.WARN)
+                            return
+                        end
+                        vim.notify("lvim-keyring: stored TOTP " .. name, vim.log.levels.INFO)
                         M.refresh()
                     end)
                 end,
@@ -300,8 +372,9 @@ local HELP = {
     { "rename", "rename the entry" },
     { "delete", "delete the entry" },
     { "copy", "copy the value to the register (auto-clears)" },
-    { "reveal", "reveal the value in a popup" },
+    { "reveal", "reveal the value / TOTP code in a popup" },
     { "generate", "generate a password + store it" },
+    { "totp", "add a TOTP (2FA) entry" },
     { "lock", "lock the wallet" },
     { "rotate", "change the master password" },
     { "help", "this help" },
@@ -371,14 +444,17 @@ local function wire_keys(buf)
     key(k.reveal, function()
         local e = cur_entry()
         if e then
-            M.reveal(e.name)
+            M.reveal(e)
         end
     end)
     key(k.copy, function()
         local e = cur_entry()
         if e then
-            M.copy(e.name)
+            M.copy(e)
         end
+    end)
+    key(k.totp, function()
+        M.add_totp()
     end)
     key(k.rename, function()
         local e = cur_entry()

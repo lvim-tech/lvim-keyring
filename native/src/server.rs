@@ -42,6 +42,10 @@ pub struct Config {
     pub lock_timeout: Duration,
     /// How long the daemon lingers after the last client disconnects (0 = exit at once).
     pub linger: Duration,
+    /// Persist: keep the daemon alive after the last editor disconnects (opt-in), so terminal git
+    /// can still resolve HTTPS credentials with no editor open. Idle auto-lock still applies, so the
+    /// exposure window is bounded; the agent exits only on SIGTERM.
+    pub persist: bool,
 }
 
 /// The daemon. Cloneable Arc handle shared by every connection + the idle timer.
@@ -102,6 +106,10 @@ impl Server {
 
     pub fn linger(&self) -> Duration {
         self.inner.cfg.linger
+    }
+
+    pub fn persist(&self) -> bool {
+        self.inner.cfg.persist
     }
 
     pub fn client_count(&self) -> usize {
@@ -187,6 +195,7 @@ impl Server {
             "secret.rename" => self.secret_rename(params),
             "secret.list" => self.secret_list(),
             "secret.generate" => self.secret_generate(params),
+            "secret.totp" => self.secret_totp(params),
             other => Err(anyhow!("unknown method '{other}'")),
         }
     }
@@ -352,6 +361,7 @@ impl Server {
                         url: None,
                         notes: None,
                         tags: Vec::new(),
+                        totp: false,
                         created: ts,
                         updated: ts,
                     };
@@ -417,6 +427,7 @@ impl Server {
                         url: None,
                         notes: None,
                         tags: Vec::new(),
+                        totp: false,
                         created: ts,
                         updated: ts,
                     },
@@ -425,6 +436,24 @@ impl Server {
             })?;
         }
         Ok(json!({ "value": value }))
+    }
+
+    /// The CURRENT TOTP code for an entry whose value is a base32 secret. The secret never leaves the
+    /// daemon — only the 6 digits + the seconds remaining in this step cross to the client.
+    fn secret_totp(&self, params: Json) -> Result<Json> {
+        let p: NameParam = serde_json::from_value(params)?;
+        self.read_session(|s| {
+            let e = s
+                .body
+                .entries
+                .get(&p.name)
+                .ok_or_else(|| anyhow!("no secret named '{}'", p.name))?;
+            const PERIOD: u64 = 30;
+            const DIGITS: u32 = 6;
+            let now = now_secs();
+            let code = crate::totp::code(&e.value, now, PERIOD, DIGITS)?;
+            Ok(json!({ "code": code, "remaining": PERIOD - (now % PERIOD), "period": PERIOD }))
+        })
     }
 }
 
@@ -476,6 +505,7 @@ struct MetaIn {
     url: Option<String>,
     notes: Option<String>,
     tags: Option<Vec<String>>,
+    totp: Option<bool>,
 }
 
 fn apply_meta(e: &mut Entry, m: &MetaIn) {
@@ -491,6 +521,9 @@ fn apply_meta(e: &mut Entry, m: &MetaIn) {
     if let Some(t) = &m.tags {
         e.tags = t.clone();
     }
+    if let Some(t) = m.totp {
+        e.totp = t;
+    }
 }
 
 /// The value-free metadata view of an entry (never includes `value`).
@@ -500,6 +533,7 @@ fn entry_meta(e: &Entry) -> Json {
         "url": e.url,
         "notes": e.notes,
         "tags": e.tags,
+        "totp": e.totp,
         "created": e.created,
         "updated": e.updated,
     })

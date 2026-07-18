@@ -60,6 +60,21 @@ local function build()
         rotate = function()
             kr.rotate()
         end,
+        import = function(args)
+            local path = args and args[1]
+            if path and path ~= "" then
+                require("lvim-keyring.import").run(vim.fn.expand(path))
+                return
+            end
+            require("lvim-ui").input({
+                title = "Import secrets from file (.env or .json)",
+                callback = function(ok, value)
+                    if ok and value and value ~= "" then
+                        require("lvim-keyring.import").run(vim.fn.expand(vim.trim(value)))
+                    end
+                end,
+            })
+        end,
     }
 end
 
@@ -74,12 +89,12 @@ function M.setup()
         end
         local handler = subs[sub]
         if handler then
-            handler()
+            handler(vim.list_slice(opts.fargs, 2))
         else
             vim.notify("lvim-keyring: unknown subcommand '" .. sub .. "'", vim.log.levels.WARN)
         end
     end, {
-        nargs = "?",
+        nargs = "*",
         desc = "lvim-keyring wallet",
         complete = function(arglead)
             local names = vim.tbl_keys(subs)

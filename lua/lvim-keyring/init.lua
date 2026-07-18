@@ -203,6 +203,26 @@ function M.rotate(cb)
     require("lvim-keyring.ui.prompt").rotate(cb or function() end)
 end
 
+--- Register a parent NAMESPACE with its icon + accent, so the panel renders `<name>/…` entries with
+--- them (and the highlight groups are defined on the spot). A consumer plugin calls this ONCE from its
+--- own setup (pcall-guarded, so it never hard-depends on lvim-keyring) — lvim-keyring keeps no list of
+--- consumers and hardcodes no names/icons/colours beyond `common`/`default`.
+---@param name string
+---@param opts { icon?: string, accent?: string, color?: string }?
+function M.register_namespace(name, opts)
+    require("lvim-keyring.namespaces").register(name, opts)
+end
+
+--- The CURRENT TOTP code for a TOTP entry: `cb({ code, remaining, period }, err)`. The base32 secret
+--- never leaves the daemon — only the digits + the seconds left in the step cross here.
+---@param name string
+---@param cb fun(totp: { code: string, remaining: integer, period: integer }?, err: string?)
+function M.totp(name, cb)
+    daemon.request("secret.totp", { name = name }, function(res, err)
+        cb(res, err)
+    end)
+end
+
 --- A NAMESPACED view of the wallet: every name is prefixed `namespace/`. A consumer passes its own
 --- PARENT once — `local kr = require("lvim-keyring").scope("forge")` — then uses BARE names
 --- (`kr.get(host, cb)` → resolves `forge/<host>`), instead of baking the prefix into every call and

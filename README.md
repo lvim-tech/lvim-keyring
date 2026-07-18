@@ -72,6 +72,7 @@ require("lvim-keyring").setup({
     daemon_path = nil, -- explicit daemon binary path (else probe env → native/build → native/target)
     warn_on_missing = true, -- one INFO notification when the daemon is not built
     linger_seconds = 0, -- daemon lifetime after the last client disconnects (0 = lock + die with the last editor)
+    persist = false, -- keep the agent alive past the last editor (for terminal git); idle auto-lock still applies
     kdf = { memory_mib = 64, iterations = 3, parallelism = 4 }, -- Argon2id, applied at create/rotate
     lock = { timeout_minutes = 15 }, -- idle auto-lock; 0 = never
     clipboard = { register = "+", clear_seconds = 30 }, -- copy target + auto-clear (0 = never clear)
@@ -88,12 +89,12 @@ require("lvim-keyring").setup({
         expand_closed = "",
         expand_open = "",
     },
-    colors = { -- namespace accents (a lvim-utils palette key, or a literal "#rrggbb")
-        db = "blue",
-        forge = "magenta",
-        git = "orange",
+    -- lvim-keyring owns ONLY these two accents. Every other parent (db/forge/git/…) — its NAME, ICON
+    -- and ACCENT — is registered at runtime by that plugin (see "Namespaces" below); nothing about a
+    -- consumer namespace is hardcoded here.
+    colors = {
         common = "cyan", -- the catch-all namespace for unqualified names
-        default = "blue",
+        default = "blue", -- fallback for a namespace nobody registered
     },
     keymaps = { -- panel / action keys (all remappable)
         add = "a",
@@ -103,6 +104,7 @@ require("lvim-keyring").setup({
         copy = "y",
         reveal = "v",
         generate = "g",
+        totp = "t", -- add a TOTP (2FA) entry
         lock = "L",
         rotate = "R",
         help = "?",
@@ -117,24 +119,27 @@ require("lvim-keyring").setup({
 - `:LvimKeyring add` — add a secret (name → masked value).
 - `:LvimKeyring generate` — generate a password into the clipboard register.
 - `:LvimKeyring rotate` — change the master password.
+- `:LvimKeyring import <path>` — import from a `.env` or `.json` file (confirms; the source stays plaintext).
 
 In the panel (all keys remappable via `config.keymaps`):
 
 | Key | Action |
 |-----|--------|
 | `a` | add a secret |
+| `t` | add a TOTP (2FA) entry |
 | `e` | edit the entry's user metadata |
 | `r` | rename the entry |
 | `d` | delete the entry |
-| `y` | copy the value to the register (auto-clears) |
-| `v` / `<CR>` | reveal the value in a popup |
+| `y` | copy the value (or TOTP code) to the register (auto-clears) |
+| `v` / `<CR>` | reveal the value — or a TOTP entry's current code + countdown — in a popup |
 | `g` | generate a password + store it |
 | `L` | lock the wallet |
 | `R` | rotate the master password |
 | `?` | help |
 
-Entries are grouped into **collapsible sections by namespace** — the first `/`-segment of the name
-(`db/`, `forge/`, `git/`, …); an unqualified name lives under `common`.
+Entries are grouped into **collapsible sections by namespace** — the first `/`-segment of the name;
+an unqualified name lives under `common`. A **TOTP entry** stores a base32 2FA secret; reveal/copy show
+the current 6-digit code (never the raw secret).
 
 ## Public API — for other plugins
 
@@ -150,11 +155,22 @@ kr.get_sync("forge/github.com", 3000) -- value?, err? — for sync seams (does n
 kr.set("db/prod", "s3cr3t", { user = "app", url = "…" }, function(ok, err) end)
 kr.delete(name, cb) -- kr.rename(from, to, cb) -- kr.list(cb) -- names + meta only, never values
 kr.generate({ length = 24, symbols = true, store_as = "db/new" }, function(value, err) end)
+kr.totp("forge/github.com-2fa", function(t, err) end) -- { code, remaining, period } for a TOTP entry
 kr.is_unlocked() -- boolean (event-refreshed) -- kr.on_state(function(s) end) for a statusline glyph
 ```
 
-**Namespaces — pass your parent, don't bake the prefix.** A consumer takes a namespaced view once and
-then uses bare names:
+**Namespaces — register your parent once, don't hardcode it here.** lvim-keyring hardcodes NO consumer
+namespace: only `common` (catch-all) and `default` (fallback). A plugin registers its own parent once,
+with an icon + accent, and everyone then uses the registered parent:
+
+```lua
+-- in the consuming plugin's setup (pcall-guarded so it never hard-depends on lvim-keyring):
+pcall(function()
+    require("lvim-keyring").register_namespace("forge", { icon = "", accent = "magenta" })
+end)
+```
+
+Then read/write with a namespaced view (bare names, no baked prefix):
 
 ```lua
 local kr = require("lvim-keyring").scope("forge")
@@ -163,8 +179,8 @@ kr.set("gitlab.com", token) -- stores "forge/gitlab.com"
 ```
 
 The stored key is always `namespace/name`, so a `{{ vault "forge/github.com" }}` template resolves the
-same entry. Names used through the top-level API without a scope are verbatim; the panel files an
-unqualified name under `common`.
+same entry. lvim-db registers `db`, lvim-forge registers `forge` — automatically, when both are
+installed. An unregistered namespace renders with the default accent + a key icon; nothing breaks.
 
 ### lvim-db credentials — the `{{ vault }}` template
 

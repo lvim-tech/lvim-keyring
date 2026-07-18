@@ -49,6 +49,9 @@ pub struct Entry {
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// This entry's `value` is a base32 TOTP secret — the UI shows the current CODE, not the secret.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub totp: bool,
     #[serde(default)]
     pub created: u64,
     #[serde(default)]
@@ -344,6 +347,7 @@ mod tests {
                 url: None,
                 notes: None,
                 tags: vec![],
+                totp: false,
                 created: 1,
                 updated: 1,
             },
@@ -416,6 +420,7 @@ mod tests {
                 url: None,
                 notes: None,
                 tags: vec![],
+                totp: false,
                 created: 1,
                 updated: 1,
             },
@@ -442,6 +447,7 @@ mod tests {
                 url: None,
                 notes: None,
                 tags: vec![],
+                totp: false,
                 created: 1,
                 updated: 1,
             },

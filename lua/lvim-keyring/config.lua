@@ -30,6 +30,7 @@
 ---@field daemon_path string?   explicit daemon binary path (else probe env → native/build → native/target)
 ---@field warn_on_missing boolean  one INFO notification when the daemon is not built
 ---@field linger_seconds integer   daemon lifetime after the last client disconnects (0 = die with the last editor)
+---@field persist boolean          keep the agent alive past the last editor (opt-in; for terminal git). Idle auto-lock still applies
 ---@field kdf LvimKeyringKdf
 ---@field lock LvimKeyringLock
 ---@field clipboard LvimKeyringClipboard
@@ -48,6 +49,7 @@ local M = {
     daemon_path = nil,
     warn_on_missing = true,
     linger_seconds = 0,
+    persist = false,
     kdf = { memory_mib = 64, iterations = 3, parallelism = 4 },
     lock = { timeout_minutes = 15 },
     clipboard = { register = "+", clear_seconds = 30 },
@@ -64,11 +66,13 @@ local M = {
         expand_closed = "", -- nf-fa-caret_right
         expand_open = "", -- nf-fa-caret_down
     },
+    -- lvim-keyring owns ONLY these two accents: `common` (the catch-all namespace for unqualified
+    -- names) and `default` (the fallback for a namespace nobody registered). Every OTHER parent
+    -- (db / forge / git / …) — its NAME, ICON and ACCENT — is registered at runtime by that plugin
+    -- via require("lvim-keyring").register_namespace(name, { icon, accent }); nothing about them is
+    -- hardcoded here.
     colors = {
-        db = "blue",
-        forge = "magenta",
-        git = "orange",
-        common = "cyan", -- the catch-all namespace for unqualified names
+        common = "cyan",
         default = "blue",
     },
     keymaps = {
@@ -79,6 +83,7 @@ local M = {
         copy = "y",
         reveal = "v",
         generate = "g",
+        totp = "t", -- add a TOTP (2FA) entry
         lock = "L",
         rotate = "R",
         help = "?",
