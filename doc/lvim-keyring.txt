@@ -147,8 +147,8 @@ icon + accent, pcall-guarded, then everyone uses it: >lua
 <
 The stored key is always `namespace/name`, so a `{{ vault "forge/github.com" }}`
 template resolves the same entry. lvim-db registers `db`, lvim-forge registers
-`forge` automatically when installed; an unregistered namespace renders with the
-default accent + a key icon.
+`forge`, lvim-git registers `git` — automatically when installed; an unregistered
+namespace renders with the default accent + a key icon.
 
 ==============================================================================
 7. LVIM-DB INTEGRATION                            *lvim-keyring-vault-verb*

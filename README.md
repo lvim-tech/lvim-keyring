@@ -179,8 +179,7 @@ kr.set("gitlab.com", token) -- stores "forge/gitlab.com"
 ```
 
 The stored key is always `namespace/name`, so a `{{ vault "forge/github.com" }}` template resolves the
-same entry. lvim-db registers `db`, lvim-forge registers `forge` — automatically, when both are
-installed. An unregistered namespace renders with the default accent + a key icon; nothing breaks.
+same entry. lvim-db registers `db`, lvim-forge registers `forge`, lvim-git registers `git` — automatically, when installed. An unregistered namespace renders with the default accent + a key icon; nothing breaks.
 
 ### lvim-db credentials — the `{{ vault }}` template
 
