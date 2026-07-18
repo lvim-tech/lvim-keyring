@@ -107,8 +107,10 @@ fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
-/// The default vault path when the environment does not name one: the set's
-/// `stdpath("data")/lvim-keyring/keyring.vault` (XDG_DATA_HOME, else ~/.local/share).
+/// The default vault path when the environment does not name one (a standalone daemon). Mirrors
+/// Neovim's `stdpath("data")` = `$XDG_DATA_HOME/nvim` (else `~/.local/share/nvim`), so a standalone
+/// daemon agrees with the editor-spawned one. The editor always passes `LVIM_KEYRING_VAULT`, so this
+/// is only the last-resort fallback.
 fn default_vault_path() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| {
         let home = std::env::var_os("HOME")
@@ -116,7 +118,7 @@ fn default_vault_path() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("."));
         home.join(".local/share")
     });
-    base.join("lvim-keyring").join("keyring.vault")
+    base.join("nvim").join("lvim-keyring").join("keyring.vault")
 }
 
 // ── stdio transport (verification) ───────────────────────────────────────────

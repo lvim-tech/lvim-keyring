@@ -13,8 +13,10 @@ the last editor exits) zeroes the key at once.
 
 ## How it works
 
-- **The vault** is one sealed file under `stdpath("data")/lvim-keyring/keyring.vault`. Copying that
-  file anywhere is a complete, portable encrypted backup — it is useless without the master password.
+- **The vault** is one sealed file — by default `stdpath("data")/lvim-keyring/keyring.vault` (the same
+  `stdpath("data")/lvim-<plugin>/` convention lvim-db and lvim-vault use), overridable with the
+  `vault_path` option. Copying that file anywhere is a complete, portable encrypted backup — it is
+  useless without the master password.
 - **The master password** is run through Argon2id (memory-hard) to derive the encryption key; the KDF
   parameters are stored in the file header, so an old vault keeps opening while new writes can use
   stronger parameters. A wrong password fails the authentication check — there is nothing else to

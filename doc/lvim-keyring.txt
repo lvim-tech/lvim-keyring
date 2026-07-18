@@ -28,9 +28,10 @@ by every editor instance and by lvim-db — one unlock, everywhere, until you
 lock. Locking (manually, on idle, or when the last editor exits) zeroes the key
 at once.
 
-The vault is ONE sealed file under `stdpath("data")/lvim-keyring/keyring.vault`
-— copying it anywhere is a complete, portable encrypted backup (useless without
-the master password). The master password is run through Argon2id to derive the
+The vault is ONE sealed file — by default `stdpath("data")/lvim-keyring/
+keyring.vault` (the set's `stdpath("data")/lvim-<plugin>/` convention), overridable
+with `vault_path`. Copying it anywhere is a complete, portable encrypted backup
+(useless without the master password). The master password is run through Argon2id to derive the
 key; the KDF parameters live in the file header, so an old vault keeps opening
 while new writes can use stronger parameters. A wrong password fails the
 authentication check — there is nothing else to guess.

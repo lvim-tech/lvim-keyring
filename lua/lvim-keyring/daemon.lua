@@ -266,9 +266,14 @@ local function spawn_env()
         LVIM_KEYRING_LINGER = tostring(config.linger_seconds or 0),
         LVIM_KEYRING_PERSIST = config.persist and "1" or "0",
     }
-    if config.vault_path and config.vault_path ~= "" then
-        env.LVIM_KEYRING_VAULT = config.vault_path
+    -- Always resolve + pass the vault path so the daemon writes where the EDITOR expects, not its own
+    -- standalone default: config.vault_path, else the set's convention `stdpath("data")/lvim-keyring/`
+    -- (same as lvim-db's store, lvim-vault's db, …). Kept configurable via config.vault_path.
+    local vault = config.vault_path
+    if not vault or vault == "" then
+        vault = vim.fn.stdpath("data") .. "/lvim-keyring/keyring.vault"
     end
+    env.LVIM_KEYRING_VAULT = vault
     return env
 end
 
