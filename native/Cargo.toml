@@ -1,0 +1,45 @@
+[package]
+name = "lvim-keyring-native"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+description = "lvim-keyring daemon: a per-user secrets agent — Argon2id + XChaCha20-Poly1305 over a unix-socket JSON-RPC"
+
+# A binary (the agent daemon), NOT a cdylib: the master key and decrypted entries
+# must live OUT of the editor's address space, and Argon2id (64 MiB) must run off
+# the editor's event loop. The daemon is spoken to over a per-user unix socket so
+# BOTH the owning Neovim's Lua AND a sibling process (lvim-db-daemon resolving a
+# `{{ vault "…" }}` template) can query it — a shared unlock, ssh-agent style.
+[[bin]]
+name = "lvim-keyring-daemon"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-std",
+    "io-util",
+    "net",
+    "sync",
+    "time",
+    "signal",
+] }
+anyhow = "1"
+
+# ── crypto: Argon2id KDF + XChaCha20-Poly1305 AEAD ───────────────────────────
+# Direct RustCrypto primitives, not the `age` crate: `age`'s passphrase mode is
+# scrypt with FIXED parameters and its X25519 recipient machinery is dead weight
+# here — direct Argon2id gives us tunable, header-stored KDF params (upgradable at
+# rotate) and a smaller, wholly-audited dependency cone.
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+
+# ── process hardening ─────────────────────────────────────────────────────────
+# prctl(PR_SET_DUMPABLE, 0) at startup: no core dumps of the unlocked key, and no
+# non-root ptrace attach to scrape it.
+libc = "0.2"
