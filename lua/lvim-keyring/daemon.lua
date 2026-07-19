@@ -24,6 +24,7 @@
 ---@module "lvim-keyring.daemon"
 
 local uv = vim.uv or vim.loop
+local bit = require("bit")
 local config = require("lvim-keyring.config")
 
 local M = {}
@@ -67,6 +68,31 @@ function M.socket_path()
     end
     local uid = (uv.getuid and uv.getuid()) or 0
     return ("/tmp/lvim-keyring-%s/agent.sock"):format(uid)
+end
+
+--- Verify the socket's PARENT directory, when it already exists, is owned by us and mode 0700 — and
+--- refuse otherwise. The `/tmp` fallback (used only when XDG_RUNTIME_DIR is unset) lives in a
+--- world-writable dir: a local attacker could pre-create `/tmp/lvim-keyring-<uid>` and bind their OWN
+--- socket there, then our client would send `vault.unlock { password }` straight to it (the daemon's
+--- SO_PEERCRED guards the SERVER side only — the CLIENT must vet who it connects to). An absent dir is
+--- fine: we create it privately (0700) before the daemon binds.
+---@param sock string
+---@return boolean ok, string? err
+local function socket_dir_secure(sock)
+    local dir = vim.fs.dirname(sock)
+    local st = uv.fs_stat(dir)
+    if not st then
+        return true
+    end
+    local uid = (uv.getuid and uv.getuid()) or 0
+    if st.uid ~= uid then
+        return false, ("keyring: socket dir %s is not owned by you (uid %d) — refusing to use it"):format(dir, st.uid)
+    end
+    -- Low 9 bits of the mode must be exactly rwx------ (0700); any group/other access is a refusal.
+    if bit.band(st.mode, 0x1FF) ~= 0x1C0 then
+        return false, ("keyring: socket dir %s must be private (0700) — refusing to use it"):format(dir)
+    end
+    return true
 end
 
 --- Candidate daemon-binary paths, in probe order.
@@ -295,7 +321,10 @@ end
 local function try_connect(sock, cb)
     local p = uv.new_pipe(false)
     p:connect(sock, function(err)
-        if err then
+        -- The connect callbacks all run on the single libuv loop thread, serially, so testing `pipe`
+        -- here is race-free: if a prior (in-flight-handshake) connect already won, this second socket is
+        -- surplus — close it and report failure, so its fd is not orphaned nor the live `pipe` clobbered.
+        if err or pipe then
             pcall(function()
                 p:close()
             end)
@@ -327,6 +356,13 @@ function M.ensure(cb)
     connecting = true
 
     local sock = M.socket_path()
+    -- Refuse a hijackable socket dir (an attacker-owned /tmp fallback) BEFORE we connect or spawn — the
+    -- client must never hand the master password to a socket it does not trust.
+    local secure, serr = socket_dir_secure(sock)
+    if not secure then
+        teardown(serr)
+        return
+    end
     try_connect(sock, function(ok)
         if ok then
             return -- on_connected() → handshake() flushes the waiters
@@ -344,8 +380,8 @@ function M.ensure(cb)
         timer:start(80, 80, function()
             tries = tries + 1
             vim.schedule(function()
-                if ready and pipe then
-                    return -- already connected by a prior tick
+                if pipe then
+                    return -- a connect is already established (its handshake may still be in flight)
                 end
                 try_connect(sock, function(connected)
                     if connected then

@@ -19,6 +19,7 @@ mod server;
 mod totp;
 mod vault;
 
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -167,9 +168,31 @@ async fn serve_socket(server: Server, path: PathBuf) {
         }
         set_mode(dir, 0o700);
     }
-    // A stale socket from a crashed daemon would block bind — remove it first. (If a
-    // LIVE daemon owns it, our own connect-before-spawn on the Lua side means we never
-    // reach here; a leftover file is safe to clear.)
+    // Singleton guard against a double-spawn race. Two editors starting at once can BOTH fail the
+    // Lua-side connect and BOTH spawn a daemon; the second must not unlink the FIRST (live) daemon's
+    // socket and bind its own (that would leave two agents both saving the same file — a lost update).
+    // We take an exclusive, non-blocking `flock` on `<sock>.lock` and HOLD it for our whole lifetime:
+    // if another live daemon already holds it, we defer to it (exit 0 — the spawning client connects to
+    // that one). A crashed daemon's lock is released by the kernel, so a leftover socket is then safe to
+    // clear. flock (vs a connect-probe) races cleanly WITHOUT masquerading as a transient client — a
+    // probe connect+disconnect would look like an editor attaching and leaving, and could trip the live
+    // daemon's last-client-disconnect exit.
+    let lock_path = path.with_extension("lock");
+    let lock_file = match std::fs::OpenOptions::new().create(true).write(true).open(&lock_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("lvim-keyring-daemon: cannot open lock {}: {e}", lock_path.display());
+            std::process::exit(1);
+        }
+    };
+    if unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        // Another live daemon holds the lock and owns the socket — defer to it.
+        std::process::exit(0);
+    }
+    // We are the singleton: any leftover socket is stale (no live daemon), safe to clear before bind.
+    // `_lock_guard` (underscore-prefixed but NAMED) is not dropped early, so the flock is held for the
+    // process's whole life — the accept loop below never returns.
+    let _lock_guard = lock_file;
     let _ = std::fs::remove_file(&path);
 
     let listener = match UnixListener::bind(&path) {

@@ -79,11 +79,11 @@ require("lvim-keyring").setup({
     daemon_path = nil, -- explicit daemon binary path (else probe env → native/build → native/target)
     warn_on_missing = true, -- one INFO notification when the daemon is not built
     linger_seconds = 0, -- daemon lifetime after the last client disconnects (0 = lock + die with the last editor)
-    persist = false, -- keep the agent alive past the last editor (for terminal git); idle auto-lock still applies
+    persist = false, -- keep the agent alive past the last editor (for terminal git); overrides lock.on_exit; idle auto-lock still applies
     kdf = { memory_mib = 64, iterations = 3, parallelism = 4 }, -- Argon2id, applied at create/rotate
     lock = {
         timeout_minutes = 15, -- idle auto-lock; 0 = never
-        on_exit = true, -- lock when the editor quits; the agent is SHARED, so any nvim's exit re-locks it
+        on_exit = true, -- lock when the editor quits; the agent is SHARED, so any nvim's exit re-locks it (skipped when persist = true)
     },
     clipboard = { register = "+", clear_seconds = 30 }, -- copy target + auto-clear (0 = never clear)
     generate = { length = 24, symbols = true }, -- generated-password defaults
@@ -236,7 +236,13 @@ git config --global credential.helper '!/absolute/path/to/lvim-keyring-daemon gi
 
 It looks up `git/<host>` first, then falls back to `forge/<host>` (a forge PAT is the HTTPS password
 for GitHub/GitLab), so one stored token serves both. When the wallet is locked or absent, the helper
-stays silent and git prompts as usual — it never blocks a push.
+stays silent and git prompts as usual — it never blocks a push (a locked wallet answers "locked" at
+once; the helper never parks git waiting for an unlock).
+
+To resolve credentials from the **terminal** with no editor open, set `persist = true`: the agent then
+stays alive (and unlocked) past the last editor, so a bare `git push` still reads its token. `persist`
+overrides `lock.on_exit` — the editor's exit-lock is skipped, since locking on exit would defeat it —
+and the agent's idle auto-lock (`lock.timeout_minutes`) still bounds how long it stays unlocked.
 
 ## Security
 

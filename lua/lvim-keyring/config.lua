@@ -16,7 +16,8 @@
 ---@class LvimKeyringLock
 ---@field timeout_minutes integer  idle auto-lock; 0 = never
 ---@field on_exit boolean          lock the wallet when the editor quits (VimLeavePre → `vault.lock`). With a
----                                SHARED agent this locks for EVERY editor, so any nvim's exit re-locks it
+---                                SHARED agent this locks for EVERY editor, so any nvim's exit re-locks it.
+---                                OVERRIDDEN by `persist` (persist keeps the agent unlocked past exit)
 
 ---@class LvimKeyringClipboard
 ---@field register string      the register a value is yanked into (e.g. "+")
@@ -32,7 +33,9 @@
 ---@field daemon_path string?   explicit daemon binary path (else probe env → native/build → native/target)
 ---@field warn_on_missing boolean  one INFO notification when the daemon is not built
 ---@field linger_seconds integer   daemon lifetime after the last client disconnects (0 = die with the last editor)
----@field persist boolean          keep the agent alive past the last editor (opt-in; for terminal git). Idle auto-lock still applies
+---@field persist boolean          keep the agent alive past the last editor (opt-in; for terminal git). Idle
+---                                auto-lock still applies. OVERRIDES lock.on_exit (the exit-lock is skipped,
+---                                else the surviving agent would be locked and terminal git would re-prompt)
 ---@field kdf LvimKeyringKdf
 ---@field lock LvimKeyringLock
 ---@field clipboard LvimKeyringClipboard

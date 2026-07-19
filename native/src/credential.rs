@@ -93,7 +93,10 @@ fn read_line<R: Read>(reader: &mut BufReader<R>, buf: &mut Vec<u8>) -> Option<us
 /// Fetch `git/<host>` then fall back to `forge/<host>`; returns (value, user?).
 fn lookup(host: &str) -> Option<(String, Option<String>)> {
     for name in [format!("git/{host}"), format!("forge/{host}")] {
-        if let Some(msg) = rpc("secret.get", serde_json::json!({ "name": name })) {
+        // `wait: false` — a locked wallet must answer `"locked"` AT ONCE, never park us for the
+        // 120 s unlock window: this helper runs with no editor guaranteed to answer the prompt, and it
+        // "must never block git" (git then falls back to prompting).
+        if let Some(msg) = rpc("secret.get", serde_json::json!({ "name": name, "wait": false })) {
             if msg.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
                 let value = msg
                     .pointer("/result/value")
@@ -134,7 +137,9 @@ pub fn run(op: &str) -> i32 {
         "store" => {
             // Best-effort: persist what git captured under `git/<host>` (only if unlocked).
             if let Some(password) = attrs.get("password") {
-                let mut params = serde_json::json!({ "name": format!("git/{host}"), "value": password });
+                // `wait: false` for the same never-block-git reason (see `lookup`): a locked wallet
+                // silently declines the store rather than parking git after every authenticated push.
+                let mut params = serde_json::json!({ "name": format!("git/{host}"), "value": password, "wait": false });
                 if let Some(u) = attrs.get("username") {
                     params["meta"] = serde_json::json!({ "user": u });
                 }
@@ -142,7 +147,10 @@ pub fn run(op: &str) -> i32 {
             }
         }
         "erase" => {
-            let _ = rpc("secret.delete", serde_json::json!({ "name": format!("git/{host}") }));
+            let _ = rpc(
+                "secret.delete",
+                serde_json::json!({ "name": format!("git/{host}"), "wait": false }),
+            );
         }
         _ => {}
     }

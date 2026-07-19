@@ -36,6 +36,19 @@ local function check_config(h)
     if ok then
         h.ok("config is valid")
     end
+    -- persist keeps the shared agent alive for terminal git after the last editor closes; it therefore
+    -- OVERRIDES lock.on_exit (the editor's exit-lock is skipped) — surface that so the interaction is not
+    -- a silent surprise. The agent's idle auto-lock still bounds the exposure.
+    if config.persist then
+        if config.lock.on_exit then
+            h.info("persist is on — it overrides lock.on_exit; the shared agent is NOT locked when the editor quits")
+        end
+        if config.lock.timeout_minutes == 0 then
+            h.warn(
+                "persist with lock.timeout_minutes = 0 — the agent never auto-locks; it stays unlocked until SIGTERM"
+            )
+        end
+    end
 end
 
 --- Probe the daemon binary, connect/handshake, and report vault + lock state.
@@ -91,7 +104,8 @@ local function check_socket_dir(h)
     local runtime = vim.env.XDG_RUNTIME_DIR
     if not runtime or runtime == "" then
         h.warn(
-            "XDG_RUNTIME_DIR is unset — the socket falls back to /tmp (still 0700, but $XDG_RUNTIME_DIR is the correct per-user tmpfs)"
+            "XDG_RUNTIME_DIR is unset — the socket falls back to a /tmp dir. The client refuses that dir "
+                .. "unless it is owned by you and mode 0700, but $XDG_RUNTIME_DIR is the correct per-user tmpfs"
         )
         return
     end

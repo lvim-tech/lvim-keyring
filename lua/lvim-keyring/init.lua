@@ -68,7 +68,12 @@ function M.setup(opts)
     -- `vault.lock` then pump the loop briefly so the request actually reaches the daemon before this process
     -- dies — a fire-and-forget write would be lost as nvim exits. Skipped when the agent is absent or already
     -- locked (nothing to do, and we must not spawn it on the way out).
-    if config.lock.on_exit then
+    --
+    -- `persist` OVERRIDES `lock.on_exit`: persist's whole purpose is to keep the shared agent usable after
+    -- the last editor closes (terminal git resolving HTTPS credentials), so locking it on exit would defeat
+    -- it entirely (git would then re-prompt anyway). When persist is on we do NOT register the exit lock —
+    -- the agent stays unlocked until its own idle auto-lock or SIGTERM bounds the exposure.
+    if config.lock.on_exit and not config.persist then
         vim.api.nvim_create_autocmd("VimLeavePre", {
             group = vim.api.nvim_create_augroup("LvimKeyringLockOnExit", { clear = true }),
             callback = function()
@@ -165,8 +170,11 @@ end
 ---@return string?, string?
 function M.get_sync(name, timeout_ms)
     local done, value, error = false, nil, nil
-    M.get(name, function(v, e)
-        done, value, error = true, v, e
+    -- `wait = false`: a locked wallet answers `"locked"` AT ONCE — no daemon park, no `vault.unlock_needed`
+    -- broadcast — so this seam keeps its no-prompt contract (a parked read would both stall for the whole
+    -- window and pop the master-password prompt in this editor, breaking a sync consumer's resolve).
+    daemon.request("secret.get", { name = name, wait = false }, function(res, err)
+        done, value, error = true, res and res.value, err
     end)
     vim.wait(timeout_ms or 3000, function()
         return done

@@ -71,9 +71,11 @@ struct Inner {
     clients: Mutex<HashMap<u64, UnboundedSender<String>>>,
     next_client: AtomicU64,
     /// Unlock parking: a locked `secret.*` call blocks on `unlock_cv` (broadcasting `vault.unlock_needed`
-    /// so the editor prompts) until the session unlocks or an explicit `vault.unlock_cancel`. The bool is
-    /// the ABORT flag — set by cancel so a dismissed prompt releases parked reads at once.
-    unlock_gate: Mutex<bool>,
+    /// so the editor prompts) until the session unlocks or an explicit `vault.unlock_cancel`. This is a
+    /// GENERATION counter, not a bool: each waiter captures its value on entry and aborts when it changes;
+    /// `unlock_cancel` bumps it. A counter (vs a shared abort bool that a waiter reset on entry) means a
+    /// cancel is never swallowed by a second reader parking concurrently.
+    unlock_gen: Mutex<u64>,
     unlock_cv: Condvar,
 }
 
@@ -94,7 +96,7 @@ impl Server {
                 last_activity: Mutex::new(Instant::now()),
                 clients: Mutex::new(HashMap::new()),
                 next_client: AtomicU64::new(1),
-                unlock_gate: Mutex::new(false),
+                unlock_gen: Mutex::new(0),
                 unlock_cv: Condvar::new(),
             }),
         }
@@ -159,21 +161,21 @@ impl Server {
         }
         self.broadcast_unlock_needed();
         let deadline = Instant::now() + timeout;
-        let mut abort = self.inner.unlock_gate.lock().unwrap();
-        *abort = false; // fresh wait cycle
+        let mut gen = self.inner.unlock_gen.lock().unwrap();
+        let start = *gen; // any change means a cancel arrived for THIS (or a later) wait cycle
         loop {
             if !self.is_locked() {
                 return true;
             }
-            if *abort {
+            if *gen != start {
                 return false;
             }
             let now = Instant::now();
             if now >= deadline {
                 return false;
             }
-            let (guard, _timed_out) = self.inner.unlock_cv.wait_timeout(abort, deadline - now).unwrap();
-            abort = guard;
+            let (guard, _timed_out) = self.inner.unlock_cv.wait_timeout(gen, deadline - now).unwrap();
+            gen = guard;
         }
     }
 
@@ -232,7 +234,16 @@ impl Server {
     }
 
     fn dispatch(&self, method: &str, params: Json) -> Result<Json> {
-        self.touch();
+        // Reset the idle auto-lock ONLY on real vault USE — never on a status poll or a handshake, else a
+        // polled-but-idle vault would never auto-lock (its 15-minute exposure bound would silently become
+        // infinite) and `autolock_in_s` would always read as the full timeout. Lock/cancel don't extend
+        // the session either.
+        if !matches!(
+            method,
+            "vault.status" | "rpc.hello" | "vault.lock" | "vault.unlock_cancel"
+        ) {
+            self.touch();
+        }
         match method {
             "rpc.hello" => self.hello(),
             "vault.create" => self.create(params),
@@ -245,7 +256,7 @@ impl Server {
             "secret.set" => self.secret_set(params),
             "secret.delete" => self.secret_delete(params),
             "secret.rename" => self.secret_rename(params),
-            "secret.list" => self.secret_list(),
+            "secret.list" => self.secret_list(params),
             "secret.generate" => self.secret_generate(params),
             "secret.totp" => self.secret_totp(params),
             other => Err(anyhow!("unknown method '{other}'")),
@@ -321,7 +332,7 @@ impl Server {
                 *self.inner.session.lock().unwrap() = Some(session);
                 *self.inner.fail_count.lock().unwrap() = 0;
                 self.broadcast_state(false);
-        self.wake_unlock_waiters();
+                self.wake_unlock_waiters();
                 Ok(json!({ "entries": self.summaries().unwrap_or(json!([])) }))
             }
             Err(e) => {
@@ -349,8 +360,8 @@ impl Server {
     /// return `"locked"`) instead of waiting out the timeout.
     fn unlock_cancel(&self) -> Result<Json> {
         {
-            let mut abort = self.inner.unlock_gate.lock().unwrap();
-            *abort = true;
+            let mut gen = self.inner.unlock_gen.lock().unwrap();
+            *gen = gen.wrapping_add(1);
         }
         self.wake_unlock_waiters();
         Ok(json!({}))
@@ -373,10 +384,12 @@ impl Server {
 
     // ── secret operations (require unlock) ───────────────────────────────────
 
-    /// Run `f` against the unlocked session, then persist. Locked → PARK until unlock (or `"locked"` on
-    /// timeout/cancel).
-    fn with_session<R>(&self, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
-        if self.is_locked() && !self.wait_for_unlock(UNLOCK_WAIT) {
+    /// Run `f` against the unlocked session, then persist. When locked: `wait` true → PARK until unlock
+    /// (or `"locked"` on timeout/cancel); `wait` false → return `"locked"` IMMEDIATELY (no park, no
+    /// prompt broadcast). Non-interactive consumers (the git-credential helper, `get_sync`) pass false
+    /// so a locked wallet never blocks git and never pops a prompt.
+    fn with_session<R>(&self, wait: bool, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
+        if self.is_locked() && !(wait && self.wait_for_unlock(UNLOCK_WAIT)) {
             bail!(LOCKED);
         }
         let mut guard = self.inner.session.lock().unwrap();
@@ -386,10 +399,11 @@ impl Server {
         Ok(r)
     }
 
-    /// Read-only access to the unlocked session (no save). Locked → PARK until unlock (or `"locked"` on
-    /// timeout/cancel) — this is what makes a `{{ vault }}` resolve transparently trigger the prompt.
-    fn read_session<R>(&self, f: impl FnOnce(&Session) -> Result<R>) -> Result<R> {
-        if self.is_locked() && !self.wait_for_unlock(UNLOCK_WAIT) {
+    /// Read-only access to the unlocked session (no save). When locked: `wait` true → PARK until unlock
+    /// (or `"locked"` on timeout/cancel) — this is what makes a `{{ vault }}` resolve transparently
+    /// trigger the prompt; `wait` false → return `"locked"` IMMEDIATELY (no park, no prompt broadcast).
+    fn read_session<R>(&self, wait: bool, f: impl FnOnce(&Session) -> Result<R>) -> Result<R> {
+        if self.is_locked() && !(wait && self.wait_for_unlock(UNLOCK_WAIT)) {
             bail!(LOCKED);
         }
         let guard = self.inner.session.lock().unwrap();
@@ -399,7 +413,7 @@ impl Server {
 
     fn secret_get(&self, params: Json) -> Result<Json> {
         let p: NameParam = serde_json::from_value(params)?;
-        self.read_session(|s| {
+        self.read_session(p.wait, |s| {
             let e = s
                 .body
                 .entries
@@ -414,7 +428,7 @@ impl Server {
         if p.name.trim().is_empty() {
             bail!("secret name cannot be empty");
         }
-        self.with_session(|s| {
+        self.with_session(p.wait, |s| {
             let ts = now_secs();
             match s.body.entries.get_mut(&p.name) {
                 Some(e) => {
@@ -452,7 +466,7 @@ impl Server {
 
     fn secret_delete(&self, params: Json) -> Result<Json> {
         let p: NameParam = serde_json::from_value(params)?;
-        self.with_session(|s| {
+        self.with_session(p.wait, |s| {
             if s.body.entries.remove(&p.name).is_none() {
                 bail!("no secret named '{}'", p.name);
             }
@@ -466,7 +480,7 @@ impl Server {
         if p.to.trim().is_empty() {
             bail!("new name cannot be empty");
         }
-        self.with_session(|s| {
+        self.with_session(p.wait, |s| {
             if s.body.entries.contains_key(&p.to) {
                 bail!("a secret named '{}' already exists", p.to);
             }
@@ -481,8 +495,9 @@ impl Server {
         Ok(json!({}))
     }
 
-    fn secret_list(&self) -> Result<Json> {
-        if self.is_locked() && !self.wait_for_unlock(UNLOCK_WAIT) {
+    fn secret_list(&self, params: Json) -> Result<Json> {
+        let p: WaitParam = serde_json::from_value(params).unwrap_or_default();
+        if self.is_locked() && !(p.wait && self.wait_for_unlock(UNLOCK_WAIT)) {
             bail!(LOCKED);
         }
         let list = self.summaries().ok_or_else(|| anyhow!(LOCKED))?;
@@ -494,21 +509,31 @@ impl Server {
         let value = generate_password(p.length.unwrap_or(24), p.symbols.unwrap_or(true));
         if let Some(name) = p.store_as.filter(|n| !n.trim().is_empty()) {
             // Storing requires an unlocked vault; a bare generate does not.
-            self.with_session(|s| {
+            self.with_session(true, |s| {
                 let ts = now_secs();
-                s.body.entries.insert(
-                    name,
-                    Entry {
-                        value: value.clone(),
-                        user: None,
-                        url: None,
-                        notes: None,
-                        tags: Vec::new(),
-                        totp: false,
-                        created: ts,
-                        updated: ts,
-                    },
-                );
+                // UPSERT, like `secret_set`: generating into an existing name replaces only the VALUE +
+                // `updated`, never clobbering its user/url/notes/tags/totp meta or resetting `created`.
+                match s.body.entries.get_mut(&name) {
+                    Some(e) => {
+                        e.value = value.clone();
+                        e.updated = ts;
+                    }
+                    None => {
+                        s.body.entries.insert(
+                            name,
+                            Entry {
+                                value: value.clone(),
+                                user: None,
+                                url: None,
+                                notes: None,
+                                tags: Vec::new(),
+                                totp: false,
+                                created: ts,
+                                updated: ts,
+                            },
+                        );
+                    }
+                }
                 Ok(())
             })?;
         }
@@ -519,7 +544,7 @@ impl Server {
     /// daemon — only the 6 digits + the seconds remaining in this step cross to the client.
     fn secret_totp(&self, params: Json) -> Result<Json> {
         let p: NameParam = serde_json::from_value(params)?;
-        self.read_session(|s| {
+        self.read_session(p.wait, |s| {
             let e = s
                 .body
                 .entries
@@ -536,6 +561,12 @@ impl Server {
 
 // ── request param shapes ─────────────────────────────────────────────────────
 
+/// The default for a request's `wait` flag: PARK a locked `secret.*` call for the master password (the
+/// interactive default). A non-interactive consumer sends `"wait": false` to get `"locked"` at once.
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Deserialize)]
 struct PasswordParam {
     password: String,
@@ -550,12 +581,17 @@ struct RotateParam {
 #[derive(Deserialize)]
 struct NameParam {
     name: String,
+    /// false ⇒ a locked wallet returns `"locked"` immediately (no park / no prompt). Default: park.
+    #[serde(default = "default_true")]
+    wait: bool,
 }
 
 #[derive(Deserialize)]
 struct RenameParam {
     from: String,
     to: String,
+    #[serde(default = "default_true")]
+    wait: bool,
 }
 
 #[derive(Deserialize)]
@@ -566,6 +602,22 @@ struct SetParam {
     value: Option<String>,
     #[serde(default)]
     meta: Option<MetaIn>,
+    /// false ⇒ a locked wallet returns `"locked"` immediately (no park / no prompt). Default: park.
+    #[serde(default = "default_true")]
+    wait: bool,
+}
+
+/// A params shape carrying only the `wait` flag — for `secret.list` (no other fields).
+#[derive(Deserialize)]
+struct WaitParam {
+    #[serde(default = "default_true")]
+    wait: bool,
+}
+
+impl Default for WaitParam {
+    fn default() -> Self {
+        WaitParam { wait: true }
+    }
 }
 
 #[derive(Deserialize, Default)]

@@ -4,7 +4,9 @@
 -- (`{ "name": "value" }` or `{ "name": { value, user, url, notes } }`) and stores each entry. The
 -- source is plaintext on disk — the wizard requires the wallet unlocked, shows a typed confirm with
 -- the count, and warns loudly; it never deletes the source. Names are used verbatim (the panel files
--- an unqualified name under `common`).
+-- an unqualified name under `common`). An entry whose NAME already exists in the wallet is SKIPPED,
+-- never clobbered — the same no-clobber guarantee `M.migrate` gives (kept in place here rather than
+-- delegating to `migrate` so the import's distinct plaintext-on-disk confirm is not double-prompted).
 --
 ---@module "lvim-keyring.import"
 
@@ -110,30 +112,54 @@ function M.run(path)
                     end
                     return
                 end
-                local done, failed = 0, 0
-                local total = #entries
-                for _, e in ipairs(entries) do
-                    kr.set(e.name, e.value, e.meta, function(sok)
-                        if sok then
-                            done = done + 1
+                -- No-clobber: list present names first and SKIP any candidate already in the wallet, so an
+                -- import never overwrites an existing entry's value/meta (same guarantee as M.migrate).
+                kr.list(function(existing)
+                    local present = {}
+                    for _, e in ipairs(existing or {}) do
+                        present[e.name] = true
+                    end
+                    local done, skipped, failed = 0, 0, 0
+                    local total = #entries
+                    local function report()
+                        if done + skipped + failed ~= total then
+                            return
+                        end
+                        local extra = {}
+                        if skipped > 0 then
+                            extra[#extra + 1] = ("%d skipped"):format(skipped)
+                        end
+                        if failed > 0 then
+                            extra[#extra + 1] = ("%d failed"):format(failed)
+                        end
+                        vim.notify(
+                            ("lvim-keyring: imported %d/%d secret(s)%s"):format(
+                                done,
+                                total,
+                                #extra > 0 and (" (%s)"):format(table.concat(extra, ", ")) or ""
+                            ),
+                            (failed > 0 or skipped > 0) and vim.log.levels.WARN or vim.log.levels.INFO
+                        )
+                        if require("lvim-keyring.ui").refresh then
+                            pcall(require("lvim-keyring.ui").refresh)
+                        end
+                    end
+                    for _, e in ipairs(entries) do
+                        if present[e.name] then
+                            skipped = skipped + 1
+                            report()
                         else
-                            failed = failed + 1
+                            kr.set(e.name, e.value, e.meta, function(sok)
+                                if sok then
+                                    done = done + 1
+                                else
+                                    failed = failed + 1
+                                end
+                                report()
+                            end)
                         end
-                        if done + failed == total then
-                            vim.notify(
-                                ("lvim-keyring: imported %d/%d secret(s)%s"):format(
-                                    done,
-                                    total,
-                                    failed > 0 and (" (%d failed)"):format(failed) or ""
-                                ),
-                                failed > 0 and vim.log.levels.WARN or vim.log.levels.INFO
-                            )
-                            if require("lvim-keyring.ui").refresh then
-                                pcall(require("lvim-keyring.ui").refresh)
-                            end
-                        end
-                    end)
-                end
+                    end
+                end)
             end)
         end,
     })

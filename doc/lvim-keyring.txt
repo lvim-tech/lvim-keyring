@@ -65,11 +65,11 @@ backend must be built (see `:checkhealth lvim-keyring`).
       daemon_path = nil,       -- explicit binary path (else env → native/build → native/target)
       warn_on_missing = true,  -- one INFO notification when the daemon is not built
       linger_seconds = 0,      -- daemon lifetime after the last client disconnects
-      persist = false,         -- keep the agent past the last editor (terminal git); idle-lock still applies
+      persist = false,         -- keep the agent past the last editor (terminal git); overrides on_exit; idle-lock still applies
       kdf = { memory_mib = 64, iterations = 3, parallelism = 4 }, -- Argon2id (create/rotate)
       lock = {
           timeout_minutes = 15,  -- idle auto-lock; 0 = never
-          on_exit = true,        -- lock when the editor quits (shared agent → any nvim's exit re-locks it)
+          on_exit = true,        -- lock when the editor quits (shared agent → any nvim's exit re-locks it; skipped when persist = true)
       },
       clipboard = { register = "+", clear_seconds = 30 },  -- copy target + auto-clear
       generate = { length = 24, symbols = true },
@@ -184,7 +184,12 @@ git over HTTPS: the daemon ships a credential helper. Wire it once — >sh
 <
 — and `git push`/`fetch` (from lvim-git or the terminal) read the token from the
 wallet: `git/<host>` first, then `forge/<host>`. A locked/absent wallet stays
-silent so git prompts as usual; it never blocks a push.
+silent so git prompts as usual; it never blocks a push (a locked wallet answers
+"locked" at once — the helper never parks git waiting for an unlock).
+
+For TERMINAL git with no editor open, set `persist = true`: the agent then stays
+alive (and unlocked) past the last editor. `persist` overrides `lock.on_exit`
+(the exit-lock is skipped), and the idle auto-lock still bounds the exposure.
 
 ==============================================================================
 8. SECURITY                                        *lvim-keyring-security*

@@ -179,7 +179,9 @@ function M.entry_row(entry, registry, on_pick, namew)
     -- YELLOW. label_spans are 0-based byte offsets into the label.
     local dn = clip(display_name(entry.name), 48)
     local info, rel = meta_text(entry.meta)
-    local label = ("%-" .. namew .. "s"):format(dn)
+    -- Pad by DISPLAY width, not bytes: `%-Ns` counts bytes, so a multibyte name (byte len > cells) would
+    -- be under-padded and shift its meta column left. `namew` is the collection's widest strdisplaywidth.
+    local label = dn .. string.rep(" ", math.max(0, namew - vim.fn.strdisplaywidth(dn)))
     local spans = { { 0, #dn, "LvimKeyringName" .. sfx } }
     if info ~= "" then
         local at = #label + 2
