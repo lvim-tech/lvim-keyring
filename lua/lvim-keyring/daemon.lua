@@ -23,7 +23,7 @@
 --
 ---@module "lvim-keyring.daemon"
 
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 local bit = require("bit")
 local config = require("lvim-keyring.config")
 
