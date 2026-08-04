@@ -76,7 +76,7 @@ local function build_rows()
         if expanded then
             local namew = rows.name_width(g.entries)
             for _, e in ipairs(g.entries) do
-                children[#children + 1] = rows.entry_row(e, state.registry, function(entry, _close)
+                children[#children + 1] = rows.entry_row(e, state.registry, function(entry)
                     -- <CR> on a row reveals the value in place (panel stays open); never closes.
                     M.reveal(entry)
                 end, namew)
@@ -589,7 +589,7 @@ function M.open(layout)
             cursorline_hl = "LvimUiCursorLine",
             keymaps = { { key = config.keymaps.help, run = show_help } },
             on_change = on_toggle,
-            on_open = function(buf, _win)
+            on_open = function(buf)
                 wire_keys(buf)
             end,
             callback = function()

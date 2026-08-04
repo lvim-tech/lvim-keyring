@@ -10,11 +10,11 @@ local M = {}
 
 --- The subcommand table: name → handler. Kept here so completion and dispatch
 --- read from ONE list.
----@type table<string, fun()>
+---@type table<string, fun(args: string[])>
 local subs
 
 --- Build the subcommand handlers lazily (they require the API, which requires this).
----@return table<string, fun()>
+---@return table<string, fun(args: string[])>
 local function build()
     local kr = require("lvim-keyring")
     return {

@@ -320,6 +320,12 @@ end
 ---@param cb fun(ok: boolean)
 local function try_connect(sock, cb)
     local p = uv.new_pipe(false)
+    if not p then
+        vim.schedule(function()
+            cb(false)
+        end)
+        return
+    end
     p:connect(sock, function(err)
         -- The connect callbacks all run on the single libuv loop thread, serially, so testing `pipe`
         -- here is race-free: if a prior (in-flight-handshake) connect already won, this second socket is
@@ -377,6 +383,10 @@ function M.ensure(cb)
         spawn_daemon(bin, sock)
         local tries = 0
         local timer = uv.new_timer()
+        if not timer then
+            teardown("could not create the retry timer for the keyring agent")
+            return
+        end
         timer:start(80, 80, function()
             tries = tries + 1
             vim.schedule(function()
