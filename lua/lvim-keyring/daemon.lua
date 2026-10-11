@@ -106,6 +106,19 @@ local function candidate_paths()
     if env and env ~= "" then
         paths[#paths + 1] = env
     end
+    -- An INSTALLED agent on $PATH, before this plugin's own build.
+    --
+    -- The agent is not this plugin's private binary: it is a per-user daemon
+    -- that outlives the editor and that other clients share — the lode desktop
+    -- client builds the same program and talks to the same socket. Without
+    -- this line, a machine where lode installed the agent and Neovim arrived
+    -- afterwards would report "no daemon" while one sat on $PATH, and the
+    -- editor would ask somebody to build what they already have. It is the
+    -- same probe lvim-db makes for `loded`, for the same reason.
+    local on_path = vim.fn.exepath("lvim-keyring-daemon")
+    if on_path and on_path ~= "" then
+        paths[#paths + 1] = on_path
+    end
     -- this file is <root>/lua/lvim-keyring/daemon.lua → strip to the plugin root
     local src = vim.fs.normalize(debug.getinfo(1, "S").source:sub(2))
     local root = src:gsub("/lua/lvim%-keyring/daemon%.lua$", "")
