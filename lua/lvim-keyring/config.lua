@@ -68,8 +68,8 @@ local M = {
         unlocked = "󰌿", -- nf-md-lock_open_variant
         entry = "", -- nf-fa-key
         generate = "󰑐", -- nf-md-refresh
-        expand_closed = "", -- nf-fa-caret_right
-        expand_open = "", -- nf-fa-caret_down
+        expand_closed = "󰅂", -- nf-md-chevron_right
+        expand_open = "󰅀", -- nf-md-chevron_down
     },
     -- lvim-keyring owns ONLY these two accents: `common` (the catch-all namespace for unqualified
     -- names) and `default` (the fallback for a namespace nobody registered). Every OTHER parent
